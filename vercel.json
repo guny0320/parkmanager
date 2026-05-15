@@ -1,5 +1,5 @@
 {
-  "buildCommand": "node generate-icons.js",
+  "framework": null,
   "outputDirectory": ".",
   "headers": [
     {
