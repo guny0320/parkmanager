@@ -1,0 +1,1411 @@
+<!DOCTYPE html>
+<html lang="ko" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="description" content="센트럴빌 주차 관리 앱">
+<meta name="application-name" content="주차비서">
+<meta name="theme-color" content="#1d4ed8">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="주차비서">
+<meta name="msapplication-TileColor" content="#1d4ed8">
+<meta name="msapplication-TileImage" content="/icons/icon-144x144.png">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192x192.png">
+<link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152x152.png">
+<link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512x512.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192x192.png">
+<title>주차비서 - 센트럴빌 주차 관리</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{font-family:'Noto Sans KR',sans-serif;background:#020617;color:#f1f5f9;min-height:100vh;overscroll-behavior:none}
+  input,button,textarea,select{font-family:inherit}
+  input::placeholder,textarea::placeholder{color:#334155}
+  ::-webkit-scrollbar{width:3px}
+  ::-webkit-scrollbar-thumb{background:#334155;border-radius:4px}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  @keyframes slideUp{from{transform:translateY(100%);opacity:0}to{transform:translateY(0);opacity:1}}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ── 번역: MyMemory 무료 API → Google fallback ────────────────────────────────
+const LANG_CODE_MAP = {
+  "영어":"en","중국어":"zh","일본어":"ja","베트남어":"vi","필리핀어":"tl","태국어":"th"
+};
+async function claudeTranslate(text, langName) {
+  const tl = LANG_CODE_MAP[langName] || "en";
+  try {
+    const url = "https://api.mymemory.translated.net/get?q=" + encodeURIComponent(text) + "&langpair=ko|" + tl;
+    const res  = await fetch(url);
+    const data = await res.json();
+    const translated = data?.responseData?.translatedText;
+    if (translated && translated !== text && !translated.includes("PLEASE")) return translated;
+  } catch(e) {}
+  try {
+    const url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=ko&tl=" + tl + "&dt=t&q=" + encodeURIComponent(text);
+    const res  = await fetch(url);
+    const data = await res.json();
+    return data[0].map(s => s[0]).join("") || "";
+  } catch(e) {}
+  throw new Error("번역 실패");
+}
+
+// ── 번호판 인식: Vercel 서버리스 함수 호출 ──────────────────────────────────
+async function claudeReadPlate(b64, mimeType) {
+  const res = await fetch('/api/scan-plate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ b64, mimeType })
+  });
+  if (!res.ok) throw new Error('API ' + res.status);
+  const data = await res.json();
+  return data.plate || '판독불가';
+}
+
+// ── localStorage 헬퍼 ────────────────────────────────────────────────────────
+function loadLS(key, fallback) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+  catch { return fallback; }
+}
+function saveLS(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
+// ── 기본 매장 ─────────────────────────────────────────────────────────────────
+const DEFAULT_STORES = [
+  { name:"다이소",        minutes:30,  icon:"🛒",  tower:false },
+  { name:"태린약국",      minutes:15,  icon:"💊",  tower:false },
+  { name:"세라젬",        minutes:60,  icon:"🛋️", tower:false },
+  { name:"오여성의원",    minutes:60,  icon:"🏥",  tower:true  },
+  { name:"몽돌신경외과",  minutes:60,  icon:"🩺",  tower:true  },
+  { name:"카페풍경",      minutes:60,  icon:"☕️", tower:false },
+  { name:"모앤두헤드스파",minutes:120, icon:"💆",  tower:true  },
+  { name:"보험회사",      minutes:480, icon:"🏢",  tower:true  },
+  { name:"기타",          minutes:30,  icon:"🚗",  tower:false },
+];
+
+const TOWER_MAX_KG = 1850;
+
+const LANGS = [
+  { code:"en",  label:"🇺🇸 영어",    name:"영어",    bcp:"en-US" },
+  { code:"zh",  label:"🇨🇳 중국어",  name:"중국어",  bcp:"zh-CN" },
+  { code:"ja",  label:"🇯🇵 일본어",  name:"일본어",  bcp:"ja-JP" },
+  { code:"vi",  label:"🇻🇳 베트남어",name:"베트남어",bcp:"vi-VN" },
+  { code:"fil", label:"🇵🇭 필리핀어",name:"필리핀어",bcp:"en-US" },
+  { code:"th",  label:"🇹🇭 태국어",  name:"태국어",  bcp:"th-TH" },
+];
+
+// ── 유틸 ──────────────────────────────────────────────────────────────────────
+const now = () => Date.now();
+const fmtTime = ts => new Date(ts).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"});
+const msToMin = ms => Math.floor(ms/60000);
+const minToMs = m  => m*60000;
+
+function useInterval(fn, delay) {
+  const saved = useRef(fn);
+  useEffect(() => { saved.current = fn; }, [fn]);
+  useEffect(() => {
+    if (delay === null) return;
+    const id = setInterval(() => saved.current(), delay);
+    return () => clearInterval(id);
+  }, [delay]);
+}
+
+function getStatus(car) {
+  const ratio = (now() - car.enteredAt) / minToMs(car.allowedMinutes);
+  if (ratio < 0.75) return { color:"#22c55e", label:"정상", emoji:"🟢" };
+  if (ratio < 1.0)  return { color:"#f59e0b", label:"주의", emoji:"🟡" };
+  return { color:"#ef4444", label:"초과", emoji:"🔴" };
+}
+
+// ── 스타일 상수 ───────────────────────────────────────────────────────────────
+const inp = {
+  background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.12)",
+  borderRadius:10, padding:"10px 14px", color:"#f1f5f9", fontSize:15,
+  width:"100%", outline:"none", boxSizing:"border-box",
+};
+const btn = (bg, ex={}) => ({
+  background:bg, color:"#fff", border:"none", borderRadius:8,
+  padding:"6px 13px", cursor:"pointer", fontSize:13, fontWeight:600, ...ex,
+});
+
+// ── CarCard ───────────────────────────────────────────────────────────────────
+function CarCard({ car, onRemove, onPause }) {
+  const [showImg,    setShowImg]    = useState(false);
+  const [showMemo,   setShowMemo]   = useState(false);
+  const [exitMemo,   setExitMemo]   = useState("");
+
+  const elapsed   = car.paused ? (car.pausedAt - car.enteredAt) : (now() - car.enteredAt);
+  const allowed   = minToMs(car.allowedMinutes);
+  const remaining = allowed - elapsed;
+  const st  = getStatus(car);
+  const pct = Math.min(100, (elapsed/allowed)*100);
+
+  function handleExitConfirm() {
+    onRemove(car.id, exitMemo);
+    setShowMemo(false);
+    setExitMemo("");
+  }
+
+  return (
+    <>
+      {showImg && car.plateImg && (
+        <div onClick={()=>setShowImg(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",zIndex:200,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:20}}>
+          <img src={car.plateImg} alt="번호판" style={{maxWidth:"100%",maxHeight:"75vh",borderRadius:12}}/>
+          <div style={{color:"#94a3b8",fontSize:13,marginTop:16}}>탭하면 닫힘</div>
+          <div style={{color:"#f1f5f9",fontSize:18,fontWeight:700,marginTop:8,letterSpacing:2}}>{car.plate}</div>
+        </div>
+      )}
+
+      {showMemo && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}
+          onClick={()=>setShowMemo(false)}>
+          <div style={{background:"#0f172a",borderRadius:16,padding:22,width:"100%",maxWidth:360,border:"1px solid rgba(255,255,255,0.12)"}}
+            onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:16,fontWeight:800,color:"#f1f5f9",marginBottom:4}}>출차 메모</div>
+            <div style={{fontSize:13,color:"#64748b",marginBottom:14}}>{car.plate} · {car.store?.name}</div>
+            <textarea
+              value={exitMemo}
+              onChange={e=>setExitMemo(e.target.value)}
+              placeholder="메모 입력 (선택사항)&#10;예) 불법주차, 민원차량 등"
+              rows={3}
+              autoFocus
+              style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:10,padding:"10px 12px",color:"#f1f5f9",fontSize:14,outline:"none",resize:"none",marginBottom:14,fontFamily:"inherit",boxSizing:"border-box"}}
+            />
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={handleExitConfirm} style={{flex:1,background:"#dc2626",border:"none",borderRadius:10,padding:11,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>
+                출차 완료
+              </button>
+              <button onClick={()=>setShowMemo(false)} style={{flex:1,background:"#334155",border:"none",borderRadius:10,padding:11,color:"#fff",fontSize:14,cursor:"pointer"}}>
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{
+        background:"rgba(255,255,255,0.04)", border:`1px solid ${st.color}44`,
+        borderRadius:14, padding:"11px 12px", marginBottom:9,
+        position:"relative", overflow:"hidden",
+        cursor: car.plateImg ? "pointer" : "default",
+      }} onClick={()=>{ if(car.plateImg) setShowImg(true); }}>
+        <div style={{position:"absolute",top:0,left:0,height:3,width:`${pct}%`,background:st.color,transition:"width 10s linear"}}/>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:6,flexWrap:"wrap"}}>
+              <span style={{background:st.color+"22",color:st.color,borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>
+                {st.emoji} {st.label}
+              </span>
+              {car.paused && <span style={{background:"rgba(217,119,6,0.2)",color:"#f59e0b",borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>⏸ 정지</span>}
+              <span style={{color:"#94a3b8",fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{car.store?.icon} {car.store?.name}</span>
+              {car.store?.tower && <span style={{color:"#60a5fa",fontSize:11,background:"rgba(96,165,250,0.15)",padding:"1px 7px",borderRadius:20,whiteSpace:"nowrap"}}>🏢 타워</span>}
+              {car.blacklisted && <span style={{color:"#ef4444",fontSize:11,whiteSpace:"nowrap"}}>⚠️ 블랙</span>}
+              {car.plateImg && <span style={{color:"#64748b",fontSize:10,whiteSpace:"nowrap"}}>📷</span>}
+            </div>
+            <div style={{fontSize:21,fontWeight:900,color:"#f1f5f9",letterSpacing:1.5,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{car.plate}</div>
+            <div style={{color:"#64748b",fontSize:11,marginTop:4}}>입차 {fmtTime(car.enteredAt)} · 허용 {car.allowedMinutes}분</div>
+            {car.note && <div style={{color:"#64748b",fontSize:11,marginTop:5,paddingTop:5,borderTop:"1px solid #ffffff10"}}>📝 {car.note}</div>}
+          </div>
+          <div style={{textAlign:"right",flexShrink:0}}>
+            <div style={{fontSize:11,color:"#94a3b8",marginBottom:2}}>{remaining>0?"남은":"초과"}</div>
+            <div style={{fontSize:26,fontWeight:900,fontFamily:"monospace",color:remaining>0?st.color:"#ef4444",lineHeight:1}}>
+              {remaining>0?`${msToMin(remaining)}'`:`+${msToMin(-remaining)}'`}
+            </div>
+            <div style={{display:"flex",gap:5,marginTop:8,justifyContent:"flex-end"}}>
+              <button
+                onClick={e=>{e.stopPropagation(); onPause(car.id);}}
+                style={{background:car.paused?"#16a34a":"#d97706",border:"none",borderRadius:7,padding:"6px 9px",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                {car.paused?"▶":"⏸"}
+              </button>
+              <button
+                onClick={e=>{e.stopPropagation(); setShowMemo(true);}}
+                style={{...btn("#dc2626"),padding:"6px 10px",fontSize:12,whiteSpace:"nowrap"}}>
+                출차 ✓
+              </button>
+            </div>
+          </div>
+        </div>
+        {car.audioUrl && <audio controls src={car.audioUrl} style={{width:"100%",marginTop:8,height:32}}/>}
+      </div>
+    </>
+  );
+}
+
+// ── 정산 계산기 ───────────────────────────────────────────────────────────────
+function ParkingCalc() {
+  const [minutes, setMinutes] = useState("");
+  const [result,  setResult]  = useState(null);
+
+  function calc(v){
+    setMinutes(v);
+    const m=parseInt(v);
+    if(isNaN(m)||m<0){setResult(null);return;}
+    let fee=0;
+    if(m<=30){ fee=m>0?1000:0; }
+    else { fee=1000+Math.ceil((m-30)/10)*500; }
+    setResult({m,fee});
+  }
+
+  return (
+    <div style={{background:"rgba(255,255,255,0.04)",borderRadius:14,padding:16,marginBottom:12}}>
+      <h3 style={{color:"#94a3b8",fontSize:12,marginBottom:10,textTransform:"uppercase",letterSpacing:1}}>💰 주차 정산 계산기</h3>
+      <div style={{color:"#475569",fontSize:12,marginBottom:10,lineHeight:1.7}}>
+        기본 30분 <strong style={{color:"#f1f5f9"}}>1,000원</strong> · 이후 10분당 <strong style={{color:"#f1f5f9"}}>500원</strong>
+      </div>
+      <div style={{marginBottom:10}}>
+        <label style={{color:"#64748b",fontSize:11,display:"block",marginBottom:5}}>주차 시간 (분)</label>
+        <input type="number" value={minutes} onChange={e=>calc(e.target.value)} placeholder="예: 45"
+          style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:10,padding:"10px 14px",color:"#f1f5f9",fontSize:15,width:"100%",outline:"none"}}/>
+      </div>
+      {result && (
+        <div style={{background:result.fee===0?"rgba(100,116,139,0.2)":"rgba(29,78,216,0.15)",border:"1px solid rgba(96,165,250,0.3)",borderRadius:10,padding:"14px 16px"}}>
+          <div style={{fontSize:13,color:"#94a3b8",marginBottom:6,lineHeight:1.8}}>
+            {result.m<=30
+              ? `${result.m}분 (기본요금 구간)`
+              : `30분(기본) + ${result.m-30}분 추가 = ${Math.ceil((result.m-30)/10)}구간 × 500원`
+            }
+          </div>
+          <div style={{fontSize:26,fontWeight:900,color:"#60a5fa"}}>
+            {result.fee.toLocaleString()}원
+          </div>
+          {result.fee===0 && <div style={{color:"#64748b",fontSize:12,marginTop:4}}>무료</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 중량 계산기 ───────────────────────────────────────────────────────────────
+function WeightCalc() {
+  const [kg,  setKg]  = useState("");
+  const [res, setRes] = useState(null);
+
+  function handle(v) {
+    setKg(v);
+    const n = parseFloat(v);
+    if (!isNaN(n) && n > 0) {
+      const eff = n - 300;
+      setRes({ n, eff, ok: eff <= TOWER_MAX_KG });
+    } else setRes(null);
+  }
+
+  return (
+    <div style={{ background:"rgba(255,255,255,0.04)", borderRadius:16, padding:18, marginBottom:14 }}>
+      <h3 style={{ color:"#94a3b8", fontSize:12, marginBottom:12, textTransform:"uppercase", letterSpacing:1 }}>🏗️ 주차타워 중량 계산기</h3>
+      <p style={{ color:"#475569", fontSize:12, marginBottom:12, lineHeight:1.6 }}>차량 총 중량 − 300kg ≤ 1,850kg → 입고 가능</p>
+      <div style={{ marginBottom:12 }}>
+        <label style={{ color:"#64748b", fontSize:11, display:"block", marginBottom:5 }}>차량 총 중량 (kg)</label>
+        <input type="number" value={kg} onChange={e=>handle(e.target.value)} placeholder="예: 2350" style={inp} />
+      </div>
+      {res && (
+        <div style={{ background:res.ok?"#16a34a22":"#dc262622", border:`1px solid ${res.ok?"#22c55e":"#ef4444"}44`, borderRadius:12, padding:"14px 16px" }}>
+          <div style={{ fontSize:13, color:"#94a3b8", marginBottom:6 }}>
+            {res.n.toLocaleString()}kg − 300kg = <strong style={{ color:"#f1f5f9", fontSize:17 }}>{Math.round(res.eff).toLocaleString()}kg</strong>
+          </div>
+          <div style={{ fontSize:20, fontWeight:800, color:res.ok?"#22c55e":"#ef4444" }}>
+            {res.ok?"✅ 입차 가능":"❌ 입차 불가"}
+            <span style={{ fontSize:12, fontWeight:400, color:"#64748b", marginLeft:8 }}>(기준 1,850kg)</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 통역 ─────────────────────────────────────────────────────────────────────
+function Translator() {
+  const [text,     setText]    = useState("");
+  const [lang,     setLang]    = useState(LANGS[0]);
+  const [output,   setOutput]  = useState("");
+  const [loading,  setLoading] = useState(false);
+  const [speaking, setSpeak]   = useState(false);
+
+  const quick = ["주차 시간이 초과되었습니다.","주차타워를 이용해주세요.","30분 주차가능합니다.","1시간 주차가능합니다.","만차입니다.","감사합니다. 좋은 하루되세요."];
+
+  async function translate() {
+    if (!text.trim()) return;
+    setLoading(true); setOutput(""); setSpeak(false);
+    try {
+      const result = await claudeTranslate(text, lang.name);
+      setOutput(result);
+    } catch (e) {
+      setOutput("번역에 실패했습니다. 인터넷 연결을 확인하거나 다시 시도해주세요.");
+    }
+    setLoading(false);
+  }
+
+  function speak() {
+    if (!output || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(output);
+    u.lang = lang.bcp; u.rate = 0.88;
+    setSpeak(true);
+    u.onend = u.onerror = () => setSpeak(false);
+    window.speechSynthesis.speak(u);
+  }
+
+  return (
+    <div style={{ background:"rgba(255,255,255,0.04)", borderRadius:16, padding:18, marginBottom:14 }}>
+      <h3 style={{ color:"#94a3b8", fontSize:12, marginBottom:12, textTransform:"uppercase", letterSpacing:1 }}>🌐 외국인 소통 도우미</h3>
+      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
+        {quick.map(p=>(
+          <button key={p} onClick={()=>setText(p)} style={{ background:"rgba(255,255,255,0.07)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:20, padding:"4px 11px", color:"#94a3b8", fontSize:11, cursor:"pointer" }}>
+            {p.length>12?p.slice(0,12)+"…":p}
+          </button>
+        ))}
+      </div>
+      <textarea value={text} onChange={e=>setText(e.target.value)} placeholder="번역할 내용 입력..." rows={3}
+        style={{ ...inp, resize:"vertical", marginBottom:10 }} />
+      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
+        {LANGS.map(l=>(
+          <button key={l.code} onClick={()=>setLang(l)} style={{ background:lang.code===l.code?"#3b82f6":"rgba(255,255,255,0.07)", border:"none", borderRadius:8, padding:"5px 10px", color:lang.code===l.code?"#fff":"#94a3b8", fontSize:12, cursor:"pointer", fontWeight:lang.code===l.code?700:400 }}>
+            {l.label}
+          </button>
+        ))}
+        <button onClick={translate} disabled={loading} style={{ ...btn("#1d4ed8"), marginLeft:"auto", padding:"6px 16px", opacity:loading?0.6:1 }}>
+          {loading?"번역중…":"번역 →"}
+        </button>
+      </div>
+      {output && (
+        <div style={{ background:"rgba(59,130,246,0.1)", border:"1px solid rgba(59,130,246,0.3)", borderRadius:12, padding:14 }}>
+          <div style={{ color:"#bfdbfe", fontSize:17, lineHeight:1.6, marginBottom:10 }}>{output}</div>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={speaking?()=>{window.speechSynthesis.cancel();setSpeak(false);}:speak}
+              style={{ ...btn(speaking?"#dc2626":"#7c3aed"), padding:"7px 16px" }}>
+              {speaking?"⏹ 중지":"🔊 음성재생"}
+            </button>
+            <button onClick={()=>navigator.clipboard?.writeText(output)} style={{ ...btn("rgba(59,130,246,0.4)"), padding:"7px 14px" }}>
+              📋 복사
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 번호판 스캐너 ─────────────────────────────────────────────────────────────
+function PlateScanner({ onDetected }) {
+  const fileRef = useRef();
+  const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [status,  setStatus]  = useState("");
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLoading(true);
+    setStatus("인식 중…");
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result;
+      const b64 = dataUrl.split(",")[1];
+      setPreview(dataUrl);
+      try {
+        const plate = await claudeReadPlate(b64, file.type);
+        if (plate && plate !== "판독불가") {
+          setStatus("✅ " + plate + " 인식됨");
+          onDetected(plate, dataUrl);
+        } else {
+          setStatus("판독 불가 — 직접 입력해주세요");
+          onDetected("", dataUrl);
+        }
+      } catch {
+        setStatus("인식 실패 — 직접 입력해주세요");
+        onDetected("", dataUrl);
+      }
+      setLoading(false);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  return (
+    <div style={{ marginBottom:12 }}>
+      <input type="file" accept="image/*" capture="environment" ref={fileRef} onChange={handleFile} style={{ display:"none" }} />
+      <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+        <button onClick={()=>fileRef.current?.click()} style={{ ...btn("#1d4ed8"), padding:"8px 16px", fontSize:13 }}>📷 번호판 촬영</button>
+        {status && <span style={{ color: status.startsWith("✅") ? "#22c55e" : "#94a3b8", fontSize:12 }}>{status}</span>}
+      </div>
+      {preview && <img src={preview} alt="번호판" style={{ marginTop:8, maxHeight:80, borderRadius:8, border:"1px solid rgba(255,255,255,0.15)", display:"block" }} />}
+    </div>
+  );
+}
+
+// ── 음성 메모 ─────────────────────────────────────────────────────────────────
+function VoiceNote({ onNote }) {
+  const [rec,    setRec]    = useState(false);
+  const [status, setStatus] = useState("");
+  const mediaRef  = useRef(null);
+  const chunksRef = useRef([]);
+
+  async function toggle() {
+    if (rec) {
+      mediaRef.current?.stop(); setRec(false); setStatus("저장됨 ✓");
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+        const mr = new MediaRecorder(stream);
+        chunksRef.current = [];
+        mr.ondataavailable = e => chunksRef.current.push(e.data);
+        mr.onstop = () => { onNote(URL.createObjectURL(new Blob(chunksRef.current,{type:"audio/webm"}))); stream.getTracks().forEach(t=>t.stop()); };
+        mediaRef.current = mr; mr.start(); setRec(true); setStatus("녹음 중…");
+      } catch { setStatus("마이크 권한 필요"); }
+    }
+  }
+
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+      <button onClick={toggle} style={{ ...btn(rec?"#dc2626":"#7c3aed"), padding:"8px 16px", fontSize:13 }}>
+        {rec?"⏹ 녹음 중지":"🎙 음성 메모"}
+      </button>
+      {status && <span style={{ color:"#94a3b8", fontSize:12 }}>{status}</span>}
+    </div>
+  );
+}
+
+// ── 입차 등록 모달 ────────────────────────────────────────────────────────────
+function AddCarModal({ onAdd, onClose, blacklist, stores, towerName }) {
+  const [plate,     setPlate]     = useState("");
+  const [plateImg,  setPlateImg]  = useState(null);
+  const [storeIdx,  setStoreIdx]  = useState(0);
+  const [note,      setNote]      = useState("");
+  const [audioUrl,  setAudioUrl]  = useState(null);
+  const [customMin, setCustomMin] = useState("");
+
+  const store = stores[storeIdx] || stores[0];
+  const isBL  = blacklist.some(b => b.plate === plate.trim());
+
+  function submit() {
+    if (!plate.trim()) return;
+    onAdd({ plate:plate.trim(), store, allowedMinutes:customMin?parseInt(customMin):store.minutes, note, audioUrl, plateImg, blacklisted:isBL });
+  }
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", zIndex:100, display:"flex", alignItems:"flex-end", justifyContent:"center" }} onClick={onClose}>
+      <div style={{ background:"#0d1526", borderRadius:"22px 22px 0 0", padding:24, width:"100%", maxWidth:520, border:"1px solid rgba(255,255,255,0.1)", borderBottom:"none", maxHeight:"92vh", overflowY:"auto", animation:"slideUp .35s ease" }}
+        onClick={e=>e.stopPropagation()}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
+          <h2 style={{ color:"#f1f5f9", fontSize:18, fontWeight:800 }}>🚗 차량 입차 등록</h2>
+          <button onClick={onClose} style={{ ...btn("#334155"), fontSize:16, padding:"5px 12px" }}>✕</button>
+        </div>
+
+        <PlateScanner onDetected={(p, img)=>{ if(p) setPlate(p); if(img) setPlateImg(img); }} />
+
+        <label style={{ color:"#64748b", fontSize:11, display:"block", marginBottom:5 }}>차량 번호</label>
+        <input value={plate} onChange={e=>setPlate(e.target.value)} placeholder="12가 3456"
+          style={{ ...inp, marginBottom:12, fontSize:21, fontWeight:800, letterSpacing:3 }} />
+
+        {isBL && (
+          <div style={{ background:"#7f1d1d", borderRadius:10, padding:"9px 13px", marginBottom:12, color:"#fca5a5", fontSize:13 }}>
+            ⚠️ 블랙리스트에 등록된 차량입니다!
+          </div>
+        )}
+
+        <label style={{ color:"#64748b", fontSize:11, display:"block", marginBottom:8 }}>방문 매장</label>
+        <div style={{ display:"flex", gap:7, flexWrap:"wrap", marginBottom:8 }}>
+          {stores.map((s,i) => (
+            <button key={i} onClick={()=>setStoreIdx(i)} style={{
+              background:storeIdx===i?"#1d4ed8":"rgba(255,255,255,0.07)",
+              border:storeIdx===i?"1px solid #3b82f6":"1px solid rgba(255,255,255,0.1)",
+              borderRadius:10, padding:"7px 13px", color:storeIdx===i?"#fff":"#94a3b8", fontSize:13, cursor:"pointer",
+            }}>{s.icon} {s.name}{s.tower?" 🏢":` (${s.minutes}분)`}</button>
+          ))}
+        </div>
+
+        {store.tower && (
+          <div style={{ background:"rgba(96,165,250,0.12)", border:"1px solid rgba(96,165,250,0.35)", borderRadius:10, padding:"9px 13px", marginBottom:10 }}>
+            <span style={{ color:"#60a5fa", fontSize:13, fontWeight:600 }}>🏢 주차타워 전용{towerName ? " (" + towerName + ")" : ""}</span>
+          </div>
+        )}
+
+        <label style={{ color:"#64748b", fontSize:11, display:"block", marginBottom:5 }}>허용 시간 (기본: {store.minutes}분)</label>
+        <input value={customMin} onChange={e=>setCustomMin(e.target.value)} type="number" placeholder={`${store.minutes} (변경시 입력)`}
+          style={{ ...inp, marginBottom:12 }} />
+
+        <label style={{ color:"#64748b", fontSize:11, display:"block", marginBottom:5 }}>메모</label>
+        <input value={note} onChange={e=>setNote(e.target.value)} placeholder="특이사항..."
+          style={{ ...inp, marginBottom:14 }} />
+
+        <VoiceNote onNote={url=>setAudioUrl(url)} />
+
+        <button onClick={submit} style={{ width:"100%", background:"linear-gradient(135deg,#1d4ed8,#4f46e5)", border:"none", borderRadius:14, padding:15, color:"#fff", fontSize:16, fontWeight:800, cursor:"pointer" }}>
+          ✅ 입차 등록
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── 타워 명단 ─────────────────────────────────────────────────────────────────
+const DEFAULT_TOWER_LIST = [
+  {tower:1,no:1, dept:"업무실장",   plate:"168다5963",car:"셀토스",  phone:"5026-4712",name:"조현민",note:""},
+  {tower:1,no:2, dept:"업무실장",   plate:"241소1688",car:"쏘렌토",  phone:"9823-1305",name:"곽미진",note:"지상"},
+  {tower:1,no:3, dept:"경남교차",   plate:"29버6879", car:"그랜저",  phone:"6558-9310",name:"이윤주",note:""},
+  {tower:1,no:4, dept:"경남교차",   plate:"22무7862", car:"K7",      phone:"3557-0844",name:"박영순",note:""},
+  {tower:1,no:5, dept:"교육장",     plate:"39러4439", car:"모닝",    phone:"4534-5909",name:"홍정애",note:""},
+  {tower:1,no:6, dept:"GA사무실",   plate:"33루0275", car:"투싼",    phone:"2943-5587",name:"심홍섭",note:""},
+  {tower:1,no:7, dept:"경남본부",   plate:"152고8028",car:"그랜져",  phone:"4080-5412",name:"이영우",note:""},
+  {tower:1,no:8, dept:"대한본부(6)",plate:"69수8569", car:"sm3",     phone:"6772-9998",name:"이정미",note:""},
+  {tower:1,no:9, dept:"대한본부(6)",plate:"11로9727", car:"K7",      phone:"9303-0505",name:"문정기",note:"지상(장애인)"},
+  {tower:1,no:10,dept:"대한본부(6)",plate:"67로0471", car:"티볼리",  phone:"2637-9174",name:"김용순",note:""},
+  {tower:1,no:11,dept:"대한본부(6)",plate:"111모3966",car:"K9",      phone:"7997-3014",name:"윤종은",note:""},
+  {tower:1,no:12,dept:"대한본부(6)",plate:"22더8908", car:"모닝",    phone:"3001-7195",name:"황은실",note:""},
+  {tower:1,no:13,dept:"대한본부(6)",plate:"53라1300", car:"쏘렌토",  phone:"9089-5016",name:"이아름",note:""},
+  {tower:1,no:14,dept:"대한본부(6)",plate:"267나2207",car:"아반떼",  phone:"4150-8422",name:"김종임",note:""},
+  {tower:1,no:15,dept:"대한본부(6)",plate:"195하5252",car:"쏘렌토",  phone:"7574-4608",name:"이갑순",note:""},
+  {tower:1,no:16,dept:"대한본부(6)",plate:"10어0553", car:"스포티지",phone:"3006-7384",name:"이우림",note:""},
+  {tower:1,no:17,dept:"거제본부(7)",plate:"33부5399", car:"레이",    phone:"4559-8711",name:"박시연",note:"교체"},
+  {tower:1,no:18,dept:"거제본부(7)",plate:"152러1935",car:"K5",      phone:"2791-3696",name:"진주영",note:""},
+  {tower:1,no:19,dept:"거제본부(7)",plate:"16오8164", car:"K7",      phone:"9085-8920",name:"박온희",note:""},
+  {tower:1,no:20,dept:"거제본부(7)",plate:"69러7154", car:"포르테",  phone:"8446-5813",name:"김민경",note:""},
+  {tower:1,no:21,dept:"거제본부(7)",plate:"259나5394",car:"레이",    phone:"4451-1220",name:"최수정",note:""},
+  {tower:1,no:22,dept:"거제본부(7)",plate:"167소8315",car:"벤즈",    phone:"2331-5951",name:"박지숙",note:""},
+  {tower:1,no:23,dept:"거제본부(7)",plate:"48어6306", car:"아반떼",  phone:"9346-2009",name:"서성혜",note:""},
+  {tower:2,no:24,dept:"거제탑본부(6)",plate:"65조1592", car:"말리부",  phone:"8707-5039",name:"마서영",note:""},
+  {tower:2,no:25,dept:"거제탑본부(6)",plate:"54저9721", car:"SM5",     phone:"4164-6226",name:"임경진",note:""},
+  {tower:2,no:26,dept:"거제탑본부(6)",plate:"09누2171", car:"모닝",    phone:"9711-5544",name:"표수진",note:""},
+  {tower:2,no:27,dept:"거제탑본부(6)",plate:"185도1659",car:"벤츠E",   phone:"3255-2036",name:"최영해",note:""},
+  {tower:2,no:28,dept:"거제탑본부(6)",plate:"383고8735",car:"그랜져",  phone:"8536-6281",name:"이정귀",note:""},
+  {tower:2,no:29,dept:"명인본부(5)", plate:"163두2351",car:"쏘나타",  phone:"2561-0211",name:"박중민",note:""},
+  {tower:2,no:30,dept:"명인본부(5)", plate:"345두9449",car:"레이",    phone:"9478-0839",name:"원정현",note:""},
+  {tower:2,no:31,dept:"명인본부(5)", plate:"15너0749", car:"제네시스",phone:"2102-0079",name:"김경식",note:""},
+];
+
+function TowerList() {
+  const [list,       setListRaw]   = useState(()=>loadLS("pm_tower_list", DEFAULT_TOWER_LIST));
+  const [monitor1,   setMonitor1]   = useState(()=>loadLS("pm_monitor1", null));
+  const [monitor2,   setMonitor2]   = useState(()=>loadLS("pm_monitor2", null));
+  const [tower1Used, setTower1UsedRaw] = useState(()=>loadLS("pm_tower1_used", []));
+  const [tower2Used, setTower2UsedRaw] = useState(()=>loadLS("pm_tower2_used", []));
+  const [tInput1,    setTInput1]  = useState("");
+  const [tInput2,    setTInput2]  = useState("");
+  const file1Ref = useRef(); const file2Ref = useRef();
+
+  function setTower1Used(v){ const n=typeof v==="function"?v(tower1Used):v; setTower1UsedRaw(n); saveLS("pm_tower1_used",n); }
+  function setTower2Used(v){ const n=typeof v==="function"?v(tower2Used):v; setTower2UsedRaw(n); saveLS("pm_tower2_used",n); }
+
+  function addTowerPlate(which){
+    const val = which===1 ? tInput1.trim() : tInput2.trim();
+    if(!val) return;
+    if(which===1){ setTower1Used(p=>[...p, val]); setTInput1(""); }
+    else         { setTower2Used(p=>[...p, val]); setTInput2(""); }
+  }
+  function removeTowerPlate(which, idx){
+    if(which===1) setTower1Used(p=>p.filter((_,i)=>i!==idx));
+    else          setTower2Used(p=>p.filter((_,i)=>i!==idx));
+  }
+  const [filterTower,setFilter]    = useState(0);
+  const [search,     setSearch]    = useState("");
+  const [selected,   setSelected]  = useState(null);
+  const [showForm,   setShowForm]  = useState(false);
+  const [editIdx,    setEditIdx]   = useState(null);
+  const [form,       setForm]      = useState({tower:1,dept:"",plate:"",car:"",phone:"",name:"",note:""});
+  const fileRef = useRef();
+  const [scanLoading, setScanLoading] = useState(false);
+  const [scanResult,  setScanResult]  = useState("");
+
+  function setList(v){ const n=typeof v==="function"?v(list):v; setListRaw(n); saveLS("pm_tower_list",n); }
+
+  const t1 = list.filter(r=>r.tower===1).length;
+  const t2 = list.filter(r=>r.tower===2).length;
+
+  const filtered = list.filter(r=>{
+    const q=search.toLowerCase();
+    const matchSearch=!q||r.plate.toLowerCase().includes(q)||r.name.includes(q)||r.dept.includes(q);
+    const matchTower=filterTower===0||r.tower===filterTower;
+    return matchSearch && matchTower;
+  });
+
+  async function handleScan(e){
+    const file=e.target.files?.[0]; if(!file) return;
+    setScanLoading(true); setScanResult("");
+    const reader=new FileReader();
+    reader.onload=async()=>{
+      const b64=reader.result.split(",")[1];
+      try{
+        const plate=await claudeReadPlate(b64,file.type);
+        if(plate&&plate!=="판독불가"){
+          const found=list.find(r=>r.plate.replace(/\s/g,"")===plate.replace(/\s/g,""));
+          if(found){ setSelected(found); setScanResult("✅ "+plate+" — 명단에 있습니다"); }
+          else { setScanResult("❌ "+plate+" — 명단에 없는 차량"); }
+        } else { setScanResult("판독 불가 — 직접 검색하세요"); }
+      }catch{ setScanResult("인식 실패"); }
+      setScanLoading(false);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function saveForm(){
+    if(!form.plate||!form.name) return;
+    if(editIdx!==null){
+      const next=[...list]; next[editIdx]={...form}; setList(next); setEditIdx(null);
+    } else {
+      setList([...list,{...form,no:list.length+1}]);
+    }
+    setForm({tower:1,dept:"",plate:"",car:"",phone:"",name:"",note:""});
+    setShowForm(false);
+  }
+
+  function del(idx){
+    if(!window.confirm("삭제할까요?")) return;
+    setList(list.filter((_,j)=>j!==idx));
+  }
+
+  const inp2={background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"7px 10px",color:"#f1f5f9",fontSize:13,width:"100%",outline:"none"};
+
+  function handleMonitor(e, which){
+    const file=e.target.files?.[0]; if(!file) return;
+    const reader=new FileReader();
+    reader.onload=()=>{
+      const dataUrl=reader.result;
+      if(which===1){setMonitor1(dataUrl);saveLS("pm_monitor1",dataUrl);}
+      else{setMonitor2(dataUrl);saveLS("pm_monitor2",dataUrl);}
+    };
+    reader.readAsDataURL(file);
+  }
+
+  const MonitorBox=({which,img,fileRef})=>(
+    <div style={{marginBottom:12}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+        <div style={{color:"#60a5fa",fontSize:13,fontWeight:600}}>📷 {which}호기 모니터</div>
+        <button onClick={()=>fileRef.current?.click()} style={{background:"rgba(29,78,216,0.3)",border:"1px solid rgba(96,165,250,0.4)",borderRadius:8,padding:"5px 11px",color:"#60a5fa",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+          📷 촬영
+        </button>
+      </div>
+      <input type="file" accept="image/*" capture="environment" ref={fileRef} onChange={e=>handleMonitor(e,which)} style={{display:"none"}}/>
+      {img?(
+        <img src={img} alt={"타워"+which+"호기"} onClick={()=>{
+          const w=window.open(); w.document.write("<img src='"+img+"' style='max-width:100%'>");
+        }} style={{width:"100%",borderRadius:10,border:"1px solid rgba(255,255,255,0.15)",cursor:"pointer",maxHeight:220,objectFit:"cover"}}/>
+      ):(
+        <div onClick={()=>fileRef.current?.click()} style={{border:"2px dashed rgba(96,165,250,0.3)",borderRadius:10,padding:"30px 0",textAlign:"center",cursor:"pointer",color:"#475569"}}>
+          <div style={{fontSize:32,marginBottom:8}}>📷</div>
+          <div style={{fontSize:13,fontWeight:600,color:"#60a5fa"}}>탭해서 촬영 또는 갤러리 선택</div>
+          <div style={{fontSize:11,marginTop:4}}>사진 보면서 번호 입력 가능</div>
+        </div>
+      )}
+      {img&&<div style={{fontSize:11,color:"#475569",marginTop:4,textAlign:"center"}}>💡 재촬영해도 이전 사진 자동 저장 · 탭하면 전체화면</div>}
+    </div>
+  );
+
+  return (
+    <div style={{background:"rgba(255,255,255,0.04)",borderRadius:14,padding:14,marginBottom:12}}>
+
+      <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:12,padding:12,marginBottom:12}}>
+        <div style={{fontSize:13,color:"#94a3b8",fontWeight:600,marginBottom:10}}>🏗️ 타워 현황</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          {[[1,tower1Used,tInput1,setTInput1],[2,tower2Used,tInput2,setTInput2]].map(([n,used,inp2val,setInp2])=>(
+            <div key={n} style={{background:"rgba(29,78,216,0.1)",border:"1px solid rgba(96,165,250,0.2)",borderRadius:10,padding:"8px",minWidth:0,overflow:"hidden"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7}}>
+                <span style={{color:"#60a5fa",fontWeight:700,fontSize:12}}>🅿️ {n}호기</span>
+                <span style={{
+                  color: used.length>=37?"#ef4444":used.length>=30?"#f59e0b":"#22c55e",
+                  fontWeight:700,fontSize:12
+                }}>{used.length}/37</span>
+              </div>
+              <div style={{display:"flex",gap:3,marginBottom:7}}>
+                <input
+                  value={inp2val}
+                  onChange={e=>setInp2(e.target.value)}
+                  onKeyDown={e=>e.key==="Enter"&&addTowerPlate(n)}
+                  placeholder="번호 입력"
+                  style={{flex:1,minWidth:0,background:"rgba(255,255,255,0.08)",border:"1px solid rgba(96,165,250,0.3)",borderRadius:6,padding:"5px 6px",color:"#f1f5f9",fontSize:11,outline:"none"}}
+                />
+                <button onClick={()=>addTowerPlate(n)} style={{background:"#1d4ed8",border:"none",borderRadius:6,padding:"5px 8px",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+                  +
+                </button>
+              </div>
+              {used.length===0
+                ? <div style={{color:"#475569",fontSize:12,textAlign:"center",padding:"6px 0"}}>비어있음</div>
+                : <div style={{maxHeight:140,overflowY:"auto"}}>
+                    {used.map((p,i)=>(
+                      <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"2px 0",borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
+                        <span style={{fontSize:12,color:"#c4b5fd",fontWeight:600}}>{p}</span>
+                        <button onClick={()=>removeTowerPlate(n,i)} style={{background:"none",border:"none",color:"#475569",fontSize:13,cursor:"pointer",padding:"0 2px",lineHeight:1}}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+              }
+              {used.length>0 && (
+                <button onClick={()=>{if(window.confirm(`${n}호기 전체 초기화?`)) n===1?setTower1Used([]):setTower2Used([]);}}
+                  style={{width:"100%",marginTop:7,background:"rgba(239,68,68,0.15)",border:"1px solid rgba(239,68,68,0.3)",borderRadius:6,padding:"4px",color:"#f87171",fontSize:11,cursor:"pointer"}}>
+                  🗑 전체 초기화
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:12,padding:12,marginBottom:12}}>
+        <div style={{fontSize:12,color:"#94a3b8",marginBottom:8}}>🏦 메리츠화재 등록 차량 ({list.length}대) — 보라색 = 타워 입고 중</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+          {list.map((r,i)=>{
+            const isIn=[...tower1Used,...tower2Used].some(p=>p.replace(/\s/g,"")===r.plate.replace(/\s/g,""));
+            return(
+              <span key={i} onClick={()=>setSelected(selected?.plate===r.plate?null:r)} style={{
+                background:isIn?"rgba(124,58,237,0.4)":selected?.plate===r.plate?"rgba(29,78,216,0.4)":"rgba(255,255,255,0.07)",
+                border:isIn?"1px solid rgba(196,181,253,0.5)":selected?.plate===r.plate?"1px solid #60a5fa":"1px solid rgba(255,255,255,0.1)",
+                borderRadius:20,padding:"4px 11px",fontSize:12,color:isIn?"#c4b5fd":selected?.plate===r.plate?"#60a5fa":"#94a3b8",
+                cursor:"pointer",transition:"all .15s",fontWeight:isIn?700:400,
+              }}>{r.plate}</span>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:12,padding:12,marginBottom:12}}>
+        <div style={{fontSize:13,color:"#94a3b8",fontWeight:600,marginBottom:10}}>📹 타워 모니터 사진</div>
+        <MonitorBox which={1} img={monitor1} fileRef={file1Ref}/>
+        <MonitorBox which={2} img={monitor2} fileRef={file2Ref}/>
+      </div>
+
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <h3 style={{color:"#94a3b8",fontSize:12,textTransform:"uppercase",letterSpacing:1}}>🏢 메리츠화재 명단 검색</h3>
+        <button onClick={()=>{setShowForm(true);setEditIdx(null);setForm({tower:1,dept:"",plate:"",car:"",phone:"",name:"",note:""});}}
+          style={{background:"#1d4ed8",border:"none",borderRadius:8,padding:"5px 12px",color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+          + 추가
+        </button>
+      </div>
+
+      <div style={{background:"rgba(29,78,216,0.1)",border:"1px solid rgba(29,78,216,0.3)",borderRadius:10,padding:"10px 12px",marginBottom:10}}>
+        <div style={{fontSize:12,color:"#60a5fa",fontWeight:600,marginBottom:7}}>📷 번호판 촬영으로 명단 조회</div>
+        <input type="file" accept="image/*" capture="environment" ref={fileRef} onChange={handleScan} style={{display:"none"}} />
+        <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          <button onClick={()=>fileRef.current?.click()} style={{background:"#1d4ed8",border:"none",borderRadius:8,padding:"7px 14px",color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer"}}>
+            📷 촬영
+          </button>
+          {scanLoading && <span style={{color:"#94a3b8",fontSize:12}}>인식 중…</span>}
+          {scanResult && <span style={{color:scanResult.startsWith("✅")?"#22c55e":scanResult.startsWith("❌")?"#ef4444":"#f59e0b",fontSize:12,fontWeight:600}}>{scanResult}</span>}
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:6,marginBottom:10}}>
+        {[[0,"전체 "+`(${t1+t2})`],[1,"🅿️ 1호기 "+`(${t1})`],[2,"🅿️ 2호기 "+`(${t2})`]].map(([v,label])=>(
+          <button key={v} onClick={()=>setFilter(v)} style={{
+            background:filterTower===v?"#1d4ed8":"rgba(255,255,255,0.07)",
+            border:"none",borderRadius:8,padding:"6px 12px",
+            color:filterTower===v?"#fff":"#94a3b8",fontSize:12,cursor:"pointer",fontWeight:filterTower===v?700:400,
+          }}>{label}</button>
+        ))}
+      </div>
+
+      <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="차량번호 또는 이름 검색..."
+        style={{...inp2,marginBottom:10}} />
+
+      {showForm && (
+        <div style={{background:"rgba(255,255,255,0.06)",borderRadius:10,padding:12,marginBottom:10}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:8}}>
+            <select value={form.tower} onChange={e=>setForm(d=>({...d,tower:parseInt(e.target.value)}))} style={inp2}>
+              <option value={1}>1호기</option>
+              <option value={2}>2호기</option>
+            </select>
+            <input value={form.dept}  onChange={e=>setForm(d=>({...d,dept:e.target.value}))}  placeholder="소속"     style={inp2}/>
+            <input value={form.plate} onChange={e=>setForm(d=>({...d,plate:e.target.value}))} placeholder="차량번호 *" style={inp2}/>
+            <input value={form.car}   onChange={e=>setForm(d=>({...d,car:e.target.value}))}   placeholder="차명"     style={inp2}/>
+            <input value={form.name}  onChange={e=>setForm(d=>({...d,name:e.target.value}))}  placeholder="사용자 *"  style={inp2}/>
+            <input value={form.phone} onChange={e=>setForm(d=>({...d,phone:e.target.value}))} placeholder="연락처"   style={inp2}/>
+            <input value={form.note}  onChange={e=>setForm(d=>({...d,note:e.target.value}))}  placeholder="비고" style={{...inp2,gridColumn:"span 2"}}/>
+          </div>
+          <div style={{display:"flex",gap:7}}>
+            <button onClick={saveForm} style={{flex:1,background:"#22c55e",border:"none",borderRadius:8,padding:9,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>저장</button>
+            <button onClick={()=>{setShowForm(false);setEditIdx(null);}} style={{flex:1,background:"#334155",border:"none",borderRadius:8,padding:9,color:"#fff",fontSize:13,cursor:"pointer"}}>취소</button>
+          </div>
+        </div>
+      )}
+
+      {filtered.length===0 && <div style={{color:"#475569",textAlign:"center",padding:16,fontSize:13}}>검색 결과 없음</div>}
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {filtered.map((r,i)=>{
+          const realIdx=list.indexOf(r);
+          return (
+            <div key={i}
+              onClick={()=>setSelected(selected?.plate===r.plate?null:r)}
+              style={{
+                background:selected?.plate===r.plate?"rgba(29,78,216,0.2)":"rgba(255,255,255,0.04)",
+                border:`1px solid ${selected?.plate===r.plate?"rgba(96,165,250,0.5)":"rgba(255,255,255,0.08)"}`,
+                borderRadius:10,padding:"10px 14px",cursor:"pointer",transition:"all .15s",
+              }}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{
+                    background:r.tower===1?"rgba(29,78,216,0.35)":"rgba(124,58,237,0.35)",
+                    color:r.tower===1?"#60a5fa":"#c084fc",
+                    fontSize:10,padding:"1px 7px",borderRadius:20,fontWeight:700,whiteSpace:"nowrap"
+                  }}>{r.tower}호기</span>
+                  <span style={{fontSize:17,fontWeight:800,color:"#f1f5f9",letterSpacing:1.5}}>{r.plate}</span>
+                  {r.note && <span style={{color:"#f59e0b",fontSize:11}}>⚠️</span>}
+                </div>
+                <span style={{color:"#475569",fontSize:12}}>{selected?.plate===r.plate?"▲":"▼"}</span>
+              </div>
+
+              {selected?.plate===r.plate && (
+                <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid rgba(255,255,255,0.1)"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:8}}>
+                    {[["소속",r.dept],["차명",r.car],["사용자",r.name],["연락처",r.phone],["비고",r.note||"-"]].map(([k,v])=>(
+                      <div key={k} style={{background:"rgba(255,255,255,0.05)",borderRadius:8,padding:"6px 10px"}}>
+                        <div style={{color:"#64748b",fontSize:10,marginBottom:2}}>{k}</div>
+                        <div style={{color:"#f1f5f9",fontSize:13,fontWeight:600}}>{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{display:"flex",gap:6}}>
+                    <button onClick={e=>{e.stopPropagation();setForm({...r});setEditIdx(realIdx);setShowForm(true);setSelected(null);}}
+                      style={{flex:1,background:"#1d4ed8",border:"none",borderRadius:8,padding:"6px",color:"#fff",fontSize:12,cursor:"pointer"}}>✏️ 수정</button>
+                    <button onClick={e=>{e.stopPropagation();del(realIdx);setSelected(null);}}
+                      style={{flex:1,background:"#334155",border:"none",borderRadius:8,padding:"6px",color:"#fff",fontSize:12,cursor:"pointer"}}>🗑 삭제</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── 메인 앱 ───────────────────────────────────────────────────────────────────
+function App() {
+  const [stores,    setStoresRaw]    = useState(() => loadLS("pm_stores",    DEFAULT_STORES));
+  const [cars,      setCarsRaw]      = useState(() => loadLS("pm_cars",      []));
+  const [history,   setHistoryRaw]   = useState(() => loadLS("pm_history",   []));
+  const [blacklist, setBlacklistRaw] = useState(() => loadLS("pm_blacklist", []));
+  const [tab,       setTab]          = useState("main");
+  const [showAdd,   setShowAdd]      = useState(false);
+  const [tick,      setTick]         = useState(0);
+
+  const [towerName, setTowerNameRaw] = useState(()=>loadLS("pm_tower_name","동진주차장"));
+  function setTowerName(v){ setTowerNameRaw(v); saveLS("pm_tower_name",v); }
+  function setStores(v)    { const n=typeof v==="function"?v(stores):v;    setStoresRaw(n);    saveLS("pm_stores",n); }
+  function setCars(v)      { const n=typeof v==="function"?v(cars):v;      setCarsRaw(n);      saveLS("pm_cars",n); }
+  function setHistory(v)   { const n=typeof v==="function"?v(history):v;   setHistoryRaw(n);   saveLS("pm_history",n); }
+  function setBlacklist(v) { const n=typeof v==="function"?v(blacklist):v; setBlacklistRaw(n); saveLS("pm_blacklist",n); }
+
+  useInterval(() => setTick(t => t+1), 1000);
+
+  const addCar = data => { setCars(p=>[{...data,id:Date.now(),enteredAt:now()},...p]); setShowAdd(false); };
+
+  const removeCar = (id, extraMemo="") => {
+    const car = cars.find(c=>c.id===id);
+    if (car) {
+      const exitTime = now();
+      const elapsed  = car.paused ? (car.pausedAt - car.enteredAt) : (exitTime - car.enteredAt);
+      const mins     = Math.floor(elapsed/60000);
+      const fee      = mins<=30 ? (mins>0?1000:0) : 1000+Math.ceil((mins-30)/10)*500;
+      const record   = {
+        id: Date.now(),
+        plate:        car.plate,
+        store:        car.store?.name || "",
+        enteredAt:    car.enteredAt,
+        exitAt:       exitTime,
+        minutes:      mins,
+        allowedMinutes: car.allowedMinutes,
+        overdue:      mins > car.allowedMinutes,
+        fee,
+        note:         extraMemo || car.note || "",
+        plateImg:     car.plateImg || null,
+        blacklisted:  car.blacklisted || false,
+      };
+      setHistory(p=>[record,...p].slice(0,200));
+    }
+    setCars(p=>p.filter(c=>c.id!==id));
+  };
+
+  const addBL    = e  => setBlacklist(p=>[e,...p.filter(b=>b.plate!==e.plate)]);
+  const removeBL = pl => setBlacklist(p=>p.filter(b=>b.plate!==pl));
+  const pauseCar = id => setCars(p=>p.map(c=>c.id===id
+    ? c.paused ? {...c,paused:false,enteredAt:now()-(c.pausedAt-c.enteredAt)}
+               : {...c,paused:true,pausedAt:now()}
+    : c));
+
+  const paused     = cars.filter(c => c.paused);
+  const overdue    = cars.filter(c => !c.paused && now()-c.enteredAt > minToMs(c.allowedMinutes));
+  const normal     = cars.filter(c => !c.paused && now()-c.enteredAt <= minToMs(c.allowedMinutes));
+  const towerCount = cars.filter(c=>c.store?.tower).length;
+
+  const tabBtn = (t, label) => (
+    <button onClick={()=>setTab(t)} style={{
+      flex:1, background:tab===t?"#1d4ed8":"rgba(255,255,255,0.05)",
+      border:"none", borderRadius:10, padding:"10px 3px",
+      color:tab===t?"#fff":"#64748b", fontSize:11, cursor:"pointer",
+      fontWeight:tab===t?700:400, transition:"all .2s",
+    }}>{label}</button>
+  );
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#020617", color:"#f1f5f9", maxWidth:520, margin:"0 auto", paddingBottom:120 }}>
+      <div style={{ background:"linear-gradient(135deg,#0f172a,#1e1b4b)", padding:"16px 14px 12px", borderBottom:"1px solid rgba(255,255,255,0.07)", position:"sticky", top:0, zIndex:50 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:12 }}>
+          <div>
+            <div style={{ fontSize:10, color:"#4f46e5", letterSpacing:2, textTransform:"uppercase", marginBottom:2 }}>센트럴빌 주차비서</div>
+            <h1 style={{ fontSize:22, fontWeight:900, color:"#f1f5f9", margin:0 }}>🅿️ ParkManager</h1>
+          </div>
+          <div style={{ textAlign:"right" }}>
+            <div style={{ display:"flex", gap:7, marginBottom:4, justifyContent:"flex-end" }}>
+              <div style={{ background:"rgba(239,68,68,0.15)", border:"1px solid rgba(239,68,68,0.3)", borderRadius:8, padding:"4px 10px", fontSize:12 }}>
+                <span style={{ color:"#ef4444", fontWeight:700 }}>{overdue.length}</span>
+                <span style={{ color:"#64748b", marginLeft:4 }}>초과</span>
+              </div>
+              <div style={{ background:"rgba(34,197,94,0.1)", border:"1px solid rgba(34,197,94,0.2)", borderRadius:8, padding:"4px 10px", fontSize:12 }}>
+                <span style={{ color:"#22c55e", fontWeight:700 }}>{normal.length}</span>
+                <span style={{ color:"#64748b", marginLeft:4 }}>정상</span>
+              </div>
+            </div>
+            <div style={{ color:"#475569", fontSize:10 }}>타워 {towerCount}/37 · 0/37</div>
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:4, overflowX:"auto" }}>
+          {tabBtn("main",    "🚗 주차현황")}
+          {tabBtn("tower",   "🏢 타워")}
+          {tabBtn("history", "📋 기록")}
+          {tabBtn("tools",   "🔧 도구")}
+          {tabBtn("payment", "💰 정산")}
+          {tabBtn("settings","⚙️ 설정")}
+        </div>
+      </div>
+
+      <div style={{ padding:"12px 10px 0" }}>
+        {tab==="main" && (
+          <>
+            {!cars.length && (
+              <div style={{ textAlign:"center", padding:"70px 20px", color:"#334155", fontSize:15 }}>
+                <div style={{ fontSize:52, marginBottom:14 }}>🅿️</div>
+                주차 차량이 없습니다<br/>
+                <span style={{ fontSize:13 }}>아래 버튼으로 차량을 등록하세요</span>
+              </div>
+            )}
+            {paused.length>0 && (
+              <>
+                <div style={{ background:"rgba(217,119,6,0.15)", border:"1px solid rgba(217,119,6,0.4)", borderRadius:10, padding:"7px 12px", marginBottom:8, display:"flex", alignItems:"center", gap:6 }}>
+                  <span style={{ fontSize:14 }}>⏸</span>
+                  <span style={{ color:"#f59e0b", fontSize:12, fontWeight:700 }}>일시정지 ({paused.length})</span>
+                </div>
+                {paused.map(c=><CarCard key={c.id} car={c} onRemove={removeCar} onPause={pauseCar} />)}
+              </>
+            )}
+            {overdue.length>0 && (
+              <>
+                <div style={{ color:"#ef4444", fontSize:12, fontWeight:700, marginBottom:8, letterSpacing:1, marginTop:paused.length?10:0 }}>⚠️ 시간 초과 ({overdue.length})</div>
+                {overdue.map(c=><CarCard key={c.id} car={c} onRemove={removeCar} onPause={pauseCar} />)}
+              </>
+            )}
+            {normal.length>0 && (
+              <>
+                <div style={{ color:"#94a3b8", fontSize:12, fontWeight:700, marginBottom:8, letterSpacing:1, marginTop:(paused.length||overdue.length)?10:0 }}>✅ 주차 중 ({normal.length})</div>
+                {normal.map(c=><CarCard key={c.id} car={c} onRemove={removeCar} onPause={pauseCar} />)}
+              </>
+            )}
+          </>
+        )}
+        {tab==="tower"   && <TowerList />}
+        {tab==="history" && <HistoryTab history={history} onClear={()=>setHistory([])} onDelete={id=>setHistory(p=>p.filter(r=>r.id!==id))} />}
+        {tab==="tools"   && <><WeightCalc /><Translator /></>}
+        {tab==="payment" && <PaymentTab />}
+        {tab==="settings"&& <SettingsTab stores={stores} onUpdateStores={setStores} blacklist={blacklist} onAddBL={addBL} onRemoveBL={removeBL} towerName={towerName} onUpdateTowerName={setTowerName} />}
+      </div>
+
+      {tab==="main" && (
+        <button onClick={()=>setShowAdd(true)} style={{
+          position:"fixed", bottom:32, right:18,
+          background:"linear-gradient(135deg,#1d4ed8,#4f46e5)",
+          color:"#fff", border:"none", borderRadius:22,
+          padding:"16px 26px", fontSize:16, fontWeight:800,
+          boxShadow:"0 8px 32px rgba(79,70,229,0.55)",
+          cursor:"pointer", zIndex:60, display:"flex", alignItems:"center", gap:8,
+        }}>＋ 입차 등록</button>
+      )}
+
+      {showAdd && <AddCarModal onAdd={addCar} onClose={()=>setShowAdd(false)} blacklist={blacklist} stores={stores} towerName={towerName} />}
+    </div>
+  );
+}
+
+// ── 정산 탭 ───────────────────────────────────────────────────────────────────
+function PaymentTab() {
+  const [records, setRecordsRaw] = useState(()=>loadLS("pm_payment",[]));
+  const [plate,   setPlate]      = useState("");
+  const [memo,    setMemo]       = useState("");
+  const [amount,  setAmount]     = useState(0);
+
+  function setRecords(v){ const n=typeof v==="function"?v(records):v; setRecordsRaw(n); saveLS("pm_payment",n); }
+
+  function save(){
+    if(!plate.trim()||amount===0) return;
+    const rec={id:Date.now(),plate:plate.trim(),amount,memo,time:now()};
+    setRecords(p=>[rec,...p]);
+    setPlate(""); setMemo(""); setAmount(0);
+  }
+
+  const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+  const todayRecs  = records.filter(r=>r.time>=todayStart.getTime());
+  const todayTotal = todayRecs.reduce((s,r)=>s+(r.amount||0),0);
+  const totalAll   = records.reduce((s,r)=>s+(r.amount||0),0);
+
+  const inpS = {background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:10,padding:"10px 14px",color:"#f1f5f9",fontSize:15,width:"100%",outline:"none"};
+  const amtBtn = (v,label) => (
+    <button key={v} onClick={()=>setAmount(v)} style={{
+      flex:1,background:amount===v?"#1d4ed8":"rgba(255,255,255,0.07)",
+      border:amount===v?"1px solid #3b82f6":"1px solid rgba(255,255,255,0.1)",
+      borderRadius:8,padding:"9px 4px",color:amount===v?"#fff":"#94a3b8",
+      fontSize:13,fontWeight:amount===v?700:400,cursor:"pointer",
+    }}>{label}</button>
+  );
+
+  return (
+    <div>
+      <div style={{background:"rgba(16,185,129,0.1)",border:"1px solid rgba(16,185,129,0.3)",borderRadius:14,padding:16,marginBottom:12}}>
+        <div style={{fontSize:12,color:"#6ee7b7",fontWeight:600,marginBottom:6}}>💳 수납 계좌</div>
+        <div style={{fontSize:14,color:"#94a3b8",marginBottom:4}}>주식회사센트럴빌</div>
+        <div style={{fontSize:20,fontWeight:900,color:"#10b981",letterSpacing:1,marginBottom:10}}>농협 301-0313-069141</div>
+        <button onClick={()=>{
+          const t="301-0313-069141";
+          if(navigator.clipboard)navigator.clipboard.writeText(t).catch(()=>{});
+          const ta=document.createElement("textarea");ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand("copy");document.body.removeChild(ta);
+        }} style={{background:"rgba(16,185,129,0.2)",border:"1px solid rgba(16,185,129,0.4)",borderRadius:8,padding:"6px 14px",color:"#6ee7b7",fontSize:13,cursor:"pointer",fontWeight:600}}>
+          📋 계좌번호 복사
+        </button>
+      </div>
+
+      <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:14,marginBottom:12}}>
+        <div style={{fontSize:12,color:"#94a3b8",fontWeight:600,marginBottom:10}}>✍️ 수납 직접 기입</div>
+        <div style={{marginBottom:8}}>
+          <div style={{color:"#64748b",fontSize:11,marginBottom:4}}>차량번호</div>
+          <input value={plate} onChange={e=>setPlate(e.target.value)} placeholder="예) 12가 3456" style={inpS}/>
+        </div>
+        <div style={{marginBottom:8}}>
+          <div style={{color:"#64748b",fontSize:11,marginBottom:6}}>받은 금액</div>
+          <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
+            {[[1000,"1,000원"],[2000,"2,000원"],[3000,"3,000원"],[5000,"5,000원"],[10000,"10,000원"]].map(([v,l])=>amtBtn(v,l))}
+          </div>
+          <button onClick={()=>setAmount(0)} style={{
+            background:amount===0?"rgba(100,116,139,0.3)":"rgba(255,255,255,0.07)",
+            border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"8px 16px",
+            color:amount===0?"#f1f5f9":"#94a3b8",fontSize:13,cursor:"pointer",fontWeight:amount===0?700:400,
+          }}>면제</button>
+        </div>
+        <div style={{marginBottom:10}}>
+          <div style={{color:"#64748b",fontSize:11,marginBottom:4}}>메모 (선택)</div>
+          <input value={memo} onChange={e=>setMemo(e.target.value)} placeholder="특이사항 입력..." style={inpS}/>
+        </div>
+        <button onClick={save} style={{width:"100%",background:"linear-gradient(135deg,#1d4ed8,#4f46e5)",border:"none",borderRadius:12,padding:13,color:"#fff",fontSize:15,fontWeight:800,cursor:"pointer"}}>
+          💰 수납 저장
+        </button>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+        {[["오늘 수납",todayTotal,todayRecs.length],["전체 누적",totalAll,records.length]].map(([label,total,cnt])=>(
+          <div key={label} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:12,padding:12,textAlign:"center"}}>
+            <div style={{color:"#64748b",fontSize:11,marginBottom:4}}>{label}</div>
+            <div style={{fontSize:20,fontWeight:900,color:total>0?"#22c55e":"#94a3b8"}}>{total>0?total.toLocaleString()+"원":"무료"}</div>
+            <div style={{color:"#475569",fontSize:11,marginTop:2}}>{cnt}건</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:14}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <div style={{fontSize:12,color:"#94a3b8",fontWeight:600}}>📋 수납 내역</div>
+          {records.length>0 && <button onClick={()=>{if(window.confirm("전체 삭제?"))setRecords([]);}} style={{background:"none",border:"1px solid rgba(239,68,68,0.4)",borderRadius:6,padding:"3px 8px",color:"#ef4444",fontSize:11,cursor:"pointer"}}>전체삭제</button>}
+        </div>
+        {!records.length && <div style={{color:"#475569",textAlign:"center",padding:16,fontSize:13}}>수납 내역 없음</div>}
+        {records.map((r,i)=>(
+          <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:i<records.length-1?"1px solid rgba(255,255,255,0.06)":"none"}}>
+            <div>
+              <div style={{fontSize:14,fontWeight:700,color:"#f1f5f9",letterSpacing:1}}>{r.plate}</div>
+              <div style={{fontSize:11,color:"#64748b"}}>{new Date(r.time).toLocaleString("ko-KR",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"})} {r.memo&&"· "+r.memo}</div>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{fontSize:15,fontWeight:700,color:r.amount>0?"#22c55e":"#94a3b8"}}>{r.amount>0?r.amount.toLocaleString()+"원":"면제"}</div>
+              <button onClick={()=>setRecords(p=>p.filter(x=>x.id!==r.id))} style={{background:"none",border:"none",color:"#475569",fontSize:15,cursor:"pointer"}}>✕</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── 설정 탭 ───────────────────────────────────────────────────────────────────
+function SettingsTab({ stores, onUpdateStores, blacklist, onAddBL, onRemoveBL, towerName, onUpdateTowerName }) {
+  const [soundAlert,  setSoundAlert]  = useState(()=>loadLS("pm_sound_alert",  true));
+  const [vibeAlert,   setVibeAlert]   = useState(()=>loadLS("pm_vibe_alert",   false));
+  const [earlyAlert,  setEarlyAlert]  = useState(()=>loadLS("pm_early_alert",  false));
+  const [editIdx,     setEditIdx]     = useState(null);
+  const [editData,    setEditData]    = useState({});
+  const [newStore,    setNewStore]    = useState({name:"",minutes:30,icon:"🏪",tower:false});
+  const [blPlate,     setBlPlate]     = useState("");
+  const [blReason,    setBlReason]    = useState("");
+  const [towerInput,  setTowerInput]  = useState(towerName);
+
+  function toggle(key,val,setter){ setter(!val); saveLS(key,!val); }
+
+  function testSound(){
+    try{
+      const ctx=new (window.AudioContext||window.webkitAudioContext)();
+      const o=ctx.createOscillator(); const g=ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.frequency.value=880; g.gain.setValueAtTime(0.3,ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.5);
+      o.start(); o.stop(ctx.currentTime+0.5);
+    }catch(e){alert("알림음 재생 실패");}
+  }
+
+  const inpS={background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:8,padding:"8px 12px",color:"#f1f5f9",fontSize:14,width:"100%",outline:"none"};
+  const toggleStyle=(on)=>({
+    width:44,height:24,borderRadius:12,border:"none",cursor:"pointer",
+    background:on?"#1d4ed8":"rgba(255,255,255,0.15)",
+    position:"relative",transition:"background .2s",flexShrink:0,
+  });
+
+  function ToggleRow({icon,label,desc,on,onToggle}){
+    return(
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
+        <div>
+          <div style={{fontSize:14,color:"#f1f5f9"}}>{icon} {label}</div>
+          <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{desc}</div>
+        </div>
+        <button onClick={onToggle} style={toggleStyle(on)}>
+          <div style={{position:"absolute",top:2,left:on?22:2,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"left .2s"}}/>
+        </button>
+      </div>
+    );
+  }
+
+  function saveEdit(){
+    if(!editData.name||!editData.minutes) return;
+    const next=[...stores]; next[editIdx]={...editData,minutes:parseInt(editData.minutes)};
+    onUpdateStores(next); setEditIdx(null);
+  }
+  function addStore(){
+    if(!newStore.name||!newStore.minutes) return;
+    onUpdateStores([...stores,{...newStore,minutes:parseInt(newStore.minutes)}]);
+    setNewStore({name:"",minutes:30,icon:"🏪",tower:false});
+  }
+  function addBL(){
+    if(!blPlate.trim()) return;
+    onAddBL({plate:blPlate.trim(),reason:blReason,addedAt:now()});
+    setBlPlate(""); setBlReason("");
+  }
+
+  return (
+    <div>
+      <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:14,marginBottom:12}}>
+        <div style={{fontSize:13,color:"#94a3b8",fontWeight:600,marginBottom:10}}>🏢 주차타워 이름 설정</div>
+        <div style={{fontSize:12,color:"#64748b",marginBottom:8}}>타워 전용 매장 선택 시 표시되는 주차타워 이름</div>
+        <div style={{display:"flex",gap:8}}>
+          <input value={towerInput} onChange={e=>setTowerInput(e.target.value)}
+            placeholder="예) 동진주차장"
+            style={{flex:1,background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:8,padding:"8px 12px",color:"#f1f5f9",fontSize:14,outline:"none"}}/>
+          <button onClick={()=>onUpdateTowerName(towerInput)} style={{background:"#22c55e",border:"none",borderRadius:8,padding:"8px 16px",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+            저장
+          </button>
+        </div>
+        {towerName && <div style={{fontSize:12,color:"#22c55e",marginTop:6}}>현재: {towerName}</div>}
+      </div>
+
+      <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:14,marginBottom:12}}>
+        <div style={{fontSize:13,color:"#94a3b8",fontWeight:600,marginBottom:4}}>🔔 알림 설정</div>
+        <ToggleRow icon="🔊" label="소리 알림" desc="시간 초과 시 알림음" on={soundAlert} onToggle={()=>toggle("pm_sound_alert",soundAlert,setSoundAlert)}/>
+        <ToggleRow icon="📳" label="진동 알림" desc="시간 초과 시 진동 (모바일)" on={vibeAlert} onToggle={()=>toggle("pm_vibe_alert",vibeAlert,setVibeAlert)}/>
+        <ToggleRow icon="🟡" label="75% 미리 경고" desc="허용 시간 75% 도달 시 미리 알림" on={earlyAlert} onToggle={()=>toggle("pm_early_alert",earlyAlert,setEarlyAlert)}/>
+        <button onClick={testSound} style={{width:"100%",marginTop:12,background:"linear-gradient(135deg,#7c3aed,#4f46e5)",border:"none",borderRadius:10,padding:11,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>
+          🎵 알림음 테스트
+        </button>
+      </div>
+
+      <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:14,marginBottom:12}}>
+        <div style={{fontSize:13,color:"#94a3b8",fontWeight:600,marginBottom:10}}>🏪 매장 설정</div>
+        {stores.map((s,i)=>(
+          <div key={i} style={{background:"rgba(255,255,255,0.04)",borderRadius:10,padding:10,marginBottom:7,border:"1px solid rgba(255,255,255,0.07)"}}>
+            {editIdx===i?(
+              <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                <div style={{display:"flex",gap:6}}>
+                  <input value={editData.icon||""} onChange={e=>setEditData(d=>({...d,icon:e.target.value}))} style={{...inpS,width:44,padding:"7px"}}/>
+                  <input value={editData.name||""} onChange={e=>setEditData(d=>({...d,name:e.target.value}))} placeholder="매장명" style={{...inpS,flex:1}}/>
+                  <input type="number" value={editData.minutes||""} onChange={e=>setEditData(d=>({...d,minutes:e.target.value}))} placeholder="분" style={{...inpS,width:60}}/>
+                </div>
+                <label style={{display:"flex",alignItems:"center",gap:7,color:"#94a3b8",fontSize:13,cursor:"pointer"}}>
+                  <input type="checkbox" checked={!!editData.tower} onChange={e=>setEditData(d=>({...d,tower:e.target.checked}))} style={{accentColor:"#3b82f6",width:15,height:15}}/>
+                  주차타워 전용
+                </label>
+                <div style={{display:"flex",gap:6}}>
+                  <button onClick={saveEdit} style={{flex:1,background:"#22c55e",border:"none",borderRadius:8,padding:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>저장</button>
+                  <button onClick={()=>setEditIdx(null)} style={{flex:1,background:"#334155",border:"none",borderRadius:8,padding:8,color:"#fff",fontSize:13,cursor:"pointer"}}>취소</button>
+                </div>
+              </div>
+            ):(
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <span style={{fontSize:14,color:"#f1f5f9",fontWeight:600}}>{s.icon} {s.name}</span>
+                  {s.tower&&<span style={{color:"#60a5fa",fontSize:10,marginLeft:5,background:"rgba(96,165,250,0.15)",padding:"1px 6px",borderRadius:20}}>타워전용</span>}
+                  <div style={{color:"#64748b",fontSize:12,marginTop:2}}>허용 {s.minutes}분</div>
+                </div>
+                <div style={{display:"flex",gap:5}}>
+                  <button onClick={()=>{setEditIdx(i);setEditData({...s});}} style={{background:"#1d4ed8",border:"none",borderRadius:7,padding:"5px 10px",color:"#fff",fontSize:12,cursor:"pointer"}}>✏️</button>
+                  <button onClick={()=>{if(window.confirm("삭제?"))onUpdateStores(stores.filter((_,j)=>j!==i));}} style={{background:"#334155",border:"none",borderRadius:7,padding:"5px 9px",color:"#fff",fontSize:12,cursor:"pointer"}}>🗑</button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+        <div style={{borderTop:"1px solid rgba(255,255,255,0.07)",paddingTop:12,marginTop:4}}>
+          <div style={{color:"#64748b",fontSize:11,marginBottom:7}}>새 매장 추가</div>
+          <div style={{display:"flex",gap:6,marginBottom:7}}>
+            <input value={newStore.icon} onChange={e=>setNewStore(d=>({...d,icon:e.target.value}))} placeholder="🏪" style={{...inpS,width:44,padding:"7px"}}/>
+            <input value={newStore.name} onChange={e=>setNewStore(d=>({...d,name:e.target.value}))} placeholder="매장명" style={{...inpS,flex:1}}/>
+            <input type="number" value={newStore.minutes} onChange={e=>setNewStore(d=>({...d,minutes:e.target.value}))} placeholder="분" style={{...inpS,width:60}}/>
+          </div>
+          <label style={{display:"flex",alignItems:"center",gap:7,color:"#94a3b8",fontSize:13,cursor:"pointer",marginBottom:9}}>
+            <input type="checkbox" checked={!!newStore.tower} onChange={e=>setNewStore(d=>({...d,tower:e.target.checked}))} style={{accentColor:"#3b82f6",width:15,height:15}}/>
+            주차타워 전용
+          </label>
+          <button onClick={addStore} style={{width:"100%",background:"#1d4ed8",border:"none",borderRadius:8,padding:10,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ 매장 추가</button>
+        </div>
+      </div>
+
+      <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:14,marginBottom:12}}>
+        <div style={{fontSize:13,color:"#94a3b8",fontWeight:600,marginBottom:10}}>🚫 블랙리스트</div>
+        <div style={{display:"flex",gap:7,marginBottom:10,flexWrap:"wrap"}}>
+          <input value={blPlate} onChange={e=>setBlPlate(e.target.value)} placeholder="차량번호" style={{...inpS,flex:1,minWidth:100}}/>
+          <input value={blReason} onChange={e=>setBlReason(e.target.value)} placeholder="사유" style={{...inpS,flex:2,minWidth:120}}/>
+          <button onClick={addBL} style={{background:"#dc2626",border:"none",borderRadius:8,padding:"8px 14px",color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer"}}>추가</button>
+        </div>
+        {!blacklist.length&&<div style={{color:"#475569",textAlign:"center",padding:12,fontSize:13}}>블랙리스트 없음</div>}
+        {blacklist.map((b,i)=>(
+          <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"rgba(220,38,38,0.1)",borderRadius:8,padding:"9px 12px",marginBottom:6,border:"1px solid rgba(220,38,38,0.2)"}}>
+            <div>
+              <span style={{color:"#f87171",fontWeight:700,fontSize:15,letterSpacing:1}}>{b.plate}</span>
+              {b.reason&&<span style={{color:"#64748b",fontSize:12,marginLeft:8}}>· {b.reason}</span>}
+            </div>
+            <button onClick={()=>onRemoveBL(b.plate)} style={{background:"#334155",border:"none",borderRadius:7,padding:"5px 10px",color:"#fff",fontSize:12,cursor:"pointer"}}>🗑 삭제</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── 주차 기록 탭 ─────────────────────────────────────────────────────────────
+function HistoryTab({ history, onClear, onDelete }) {
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+
+  const fmtDur = mins => {
+    if (mins < 60) return `${mins}분`;
+    return `${Math.floor(mins/60)}시간 ${mins%60}분`;
+  };
+  const fmtDateTime = ts => new Date(ts).toLocaleString("ko-KR",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"});
+
+  const filtered = history.filter(r => {
+    const q = search.toLowerCase();
+    const matchS = !q || r.plate.toLowerCase().includes(q) || (r.store||"").includes(q) || (r.note||"").includes(q);
+    const matchF = filter==="all" || (filter==="overdue"&&r.overdue) || (filter==="normal"&&!r.overdue);
+    return matchS && matchF;
+  });
+
+  const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+  const todayCount = history.filter(r=>r.exitAt>=todayStart.getTime()).length;
+  const overdueCount = history.filter(r=>r.overdue).length;
+
+  return (
+    <div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:12}}>
+        {[["전체",history.length,"#94a3b8"],["오늘",todayCount,"#22c55e"],["초과",overdueCount,"#ef4444"]].map(([l,v,col])=>(
+          <div key={l} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:10,padding:"10px 8px",textAlign:"center"}}>
+            <div style={{fontSize:11,color:"#64748b",marginBottom:3}}>{l}</div>
+            <div style={{fontSize:20,fontWeight:900,color:col}}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="차량번호, 매장, 메모 검색..."
+        style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:10,padding:"9px 14px",color:"#f1f5f9",fontSize:14,width:"100%",outline:"none",boxSizing:"border-box",marginBottom:8}}/>
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        {[["all","전체"],["normal","정상"],["overdue","초과"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setFilter(v)} style={{
+            background:filter===v?"#1d4ed8":"rgba(255,255,255,0.07)",
+            border:"none",borderRadius:8,padding:"5px 12px",
+            color:filter===v?"#fff":"#94a3b8",fontSize:12,cursor:"pointer",fontWeight:filter===v?700:400,
+          }}>{l}</button>
+        ))}
+        {history.length>0 && (
+          <button onClick={()=>{if(window.confirm("전체 기록 삭제?")) onClear();}}
+            style={{marginLeft:"auto",background:"none",border:"1px solid rgba(239,68,68,0.4)",borderRadius:8,padding:"5px 10px",color:"#ef4444",fontSize:12,cursor:"pointer"}}>
+            전체 삭제
+          </button>
+        )}
+      </div>
+
+      {!filtered.length && <div style={{color:"#475569",textAlign:"center",padding:"2rem 0",fontSize:14}}>기록 없음</div>}
+      {filtered.map((r,i)=>(
+        <div key={r.id} style={{
+          background:"rgba(255,255,255,0.04)",
+          border:`1px solid ${r.overdue?"rgba(239,68,68,0.3)":"rgba(255,255,255,0.08)"}`,
+          borderRadius:12,padding:"12px 14px",marginBottom:8,
+        }}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:4}}>
+                <span style={{fontSize:17,fontWeight:900,color:"#f1f5f9",letterSpacing:1.5}}>{r.plate}</span>
+                <span style={{fontSize:11,color:"#94a3b8"}}>{r.store}</span>
+                {r.overdue && <span style={{fontSize:10,background:"rgba(239,68,68,0.2)",color:"#f87171",padding:"1px 7px",borderRadius:20,fontWeight:700}}>초과</span>}
+                {r.blacklisted && <span style={{fontSize:10,color:"#ef4444"}}>⚠️</span>}
+              </div>
+              <div style={{fontSize:11,color:"#64748b"}}>
+                {fmtDateTime(r.enteredAt)} → {fmtDateTime(r.exitAt)}
+              </div>
+            </div>
+            <button onClick={()=>onDelete(r.id)} style={{background:"none",border:"none",color:"#475569",fontSize:16,cursor:"pointer",flexShrink:0,padding:"0 0 0 8px"}}>✕</button>
+          </div>
+
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:r.note?6:0}}>
+            <span style={{fontSize:12,background:"rgba(255,255,255,0.07)",padding:"3px 9px",borderRadius:20,color:"#c4b5fd"}}>
+              ⏱ {fmtDur(r.minutes)}
+            </span>
+            <span style={{fontSize:12,background:"rgba(255,255,255,0.07)",padding:"3px 9px",borderRadius:20,color:"#94a3b8"}}>
+              허용 {r.allowedMinutes}분
+            </span>
+            {r.fee>0 && (
+              <span style={{fontSize:12,background:"rgba(34,197,94,0.15)",padding:"3px 9px",borderRadius:20,color:"#22c55e",fontWeight:700}}>
+                💰 {r.fee.toLocaleString()}원
+              </span>
+            )}
+          </div>
+          {r.note && (
+            <div style={{fontSize:12,color:"#94a3b8",marginTop:5,paddingTop:5,borderTop:"1px solid rgba(255,255,255,0.06)"}}>
+              📝 {r.note}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
