@@ -6,6 +6,6 @@
     "build": "node generate-icons.js"
   },
   "engines": {
-    "node": "18.x"
+    "node": "24.x"
   }
 }
