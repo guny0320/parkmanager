@@ -114,6 +114,23 @@ const fmtTime = ts => new Date(ts).toLocaleTimeString("ko-KR",{hour:"2-digit",mi
 const msToMin = ms => Math.floor(ms/60000);
 const minToMs = m  => m*60000;
 
+function playAlarmSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const beep = (t, freq, dur) => {
+      const o = ctx.createOscillator(); const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = 'sine'; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.45, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      o.start(t); o.stop(t + dur + 0.05);
+    };
+    const t0 = ctx.currentTime;
+    beep(t0, 880, 0.28); beep(t0+0.38, 1100, 0.28);
+    beep(t0+0.76, 880, 0.28); beep(t0+1.14, 1100, 0.50);
+  } catch(e) {}
+}
+
 function useInterval(fn, delay) {
   const saved = useRef(fn);
   useEffect(() => { saved.current = fn; }, [fn]);
@@ -349,13 +366,30 @@ function Translator() {
   }
 
   function speak() {
-    if (!output || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
+    if (!output) return;
+    const synth = window.speechSynthesis;
+    if (!synth) { alert("이 브라우저는 음성 재생을 지원하지 않습니다.\nChrome 또는 Safari를 사용해주세요."); return; }
+    synth.cancel();
     const u = new SpeechSynthesisUtterance(output);
-    u.lang = lang.bcp; u.rate = 0.88;
+    u.lang = lang.bcp;
+    u.rate = 0.88;
+    u.volume = 1.0;
+    // 기기에 설치된 음성 중 해당 언어 음성 자동 선택
+    const voices = synth.getVoices();
+    if (voices.length > 0) {
+      const match = voices.find(v => v.lang.startsWith(lang.code)) ||
+                    voices.find(v => v.lang.startsWith(lang.bcp.split('-')[0]));
+      if (match) u.voice = match;
+    }
     setSpeak(true);
-    u.onend = u.onerror = () => setSpeak(false);
-    window.speechSynthesis.speak(u);
+    u.onend = () => setSpeak(false);
+    u.onerror = (e) => {
+      setSpeak(false);
+      if (e.error !== 'interrupted' && e.error !== 'canceled') {
+        alert("음성 재생 실패 (" + (e.error||"unknown") + ")\n기기의 언어 설정에서 해당 언어 음성팩이 설치되어 있는지 확인해주세요.");
+      }
+    };
+    synth.speak(u);
   }
 
   return (
@@ -400,7 +434,6 @@ function Translator() {
 
 // ── 번호판 스캐너 ─────────────────────────────────────────────────────────────
 function PlateScanner({ onDetected }) {
-  const fileRef = useRef();
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null);
   const [status,  setStatus]  = useState("");
@@ -435,9 +468,11 @@ function PlateScanner({ onDetected }) {
 
   return (
     <div style={{ marginBottom:12 }}>
-      <input type="file" accept="image/*" capture="environment" ref={fileRef} onChange={handleFile} style={{ display:"none" }} />
       <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
-        <button onClick={()=>fileRef.current?.click()} style={{ ...btn("#1d4ed8"), padding:"8px 16px", fontSize:13 }}>📷 번호판 촬영</button>
+        <label style={{ ...btn("#1d4ed8"), padding:"8px 16px", fontSize:13, display:"inline-flex", alignItems:"center", cursor:"pointer" }}>
+          📷 번호판 촬영
+          <input type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display:"none" }} />
+        </label>
         {status && <span style={{ color: status.startsWith("✅") ? "#22c55e" : "#94a3b8", fontSize:12 }}>{status}</span>}
       </div>
       {preview && <img src={preview} alt="번호판" style={{ marginTop:8, maxHeight:80, borderRadius:8, border:"1px solid rgba(255,255,255,0.15)", display:"block" }} />}
@@ -528,7 +563,7 @@ function AddCarModal({ onAdd, onClose, blacklist, stores, towerName }) {
 
         {store.tower && (
           <div style={{ background:"rgba(96,165,250,0.12)", border:"1px solid rgba(96,165,250,0.35)", borderRadius:10, padding:"9px 13px", marginBottom:10 }}>
-            <span style={{ color:"#60a5fa", fontSize:13, fontWeight:600 }}>🏢 주차타워 전용{towerName ? " (" + towerName + ")" : ""}</span>
+            <span style={{ color:"#60a5fa", fontSize:13, fontWeight:600 }}>🏢 주차타워 가능{towerName ? " (" + towerName + ")" : ""}</span>
           </div>
         )}
 
@@ -593,7 +628,6 @@ function TowerList() {
   const [tower2Used, setTower2UsedRaw] = useState(()=>loadLS("pm_tower2_used", []));
   const [tInput1,    setTInput1]  = useState("");
   const [tInput2,    setTInput2]  = useState("");
-  const file1Ref = useRef(); const file2Ref = useRef();
 
   function setTower1Used(v){ const n=typeof v==="function"?v(tower1Used):v; setTower1UsedRaw(n); saveLS("pm_tower1_used",n); }
   function setTower2Used(v){ const n=typeof v==="function"?v(tower2Used):v; setTower2UsedRaw(n); saveLS("pm_tower2_used",n); }
@@ -611,10 +645,10 @@ function TowerList() {
   const [filterTower,setFilter]    = useState(0);
   const [search,     setSearch]    = useState("");
   const [selected,   setSelected]  = useState(null);
+  const [badgeSel,   setBadgeSel]  = useState(null);
   const [showForm,   setShowForm]  = useState(false);
   const [editIdx,    setEditIdx]   = useState(null);
   const [form,       setForm]      = useState({tower:1,dept:"",plate:"",car:"",phone:"",name:"",note:""});
-  const fileRef = useRef();
   const [scanLoading, setScanLoading] = useState(false);
   const [scanResult,  setScanResult]  = useState("");
 
@@ -678,25 +712,26 @@ function TowerList() {
     reader.readAsDataURL(file);
   }
 
-  const MonitorBox=({which,img,fileRef})=>(
+  const MonitorBox=({which,img})=>(
     <div style={{marginBottom:12}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
         <div style={{color:"#60a5fa",fontSize:13,fontWeight:600}}>📷 {which}호기 모니터</div>
-        <button onClick={()=>fileRef.current?.click()} style={{background:"rgba(29,78,216,0.3)",border:"1px solid rgba(96,165,250,0.4)",borderRadius:8,padding:"5px 11px",color:"#60a5fa",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+        <label style={{background:"rgba(29,78,216,0.3)",border:"1px solid rgba(96,165,250,0.4)",borderRadius:8,padding:"5px 11px",color:"#60a5fa",fontSize:12,fontWeight:600,cursor:"pointer",display:"inline-block"}}>
           📷 촬영
-        </button>
+          <input type="file" accept="image/*" capture="environment" onChange={e=>handleMonitor(e,which)} style={{display:"none"}}/>
+        </label>
       </div>
-      <input type="file" accept="image/*" capture="environment" ref={fileRef} onChange={e=>handleMonitor(e,which)} style={{display:"none"}}/>
       {img?(
         <img src={img} alt={"타워"+which+"호기"} onClick={()=>{
           const w=window.open(); w.document.write("<img src='"+img+"' style='max-width:100%'>");
         }} style={{width:"100%",borderRadius:10,border:"1px solid rgba(255,255,255,0.15)",cursor:"pointer",maxHeight:220,objectFit:"cover"}}/>
       ):(
-        <div onClick={()=>fileRef.current?.click()} style={{border:"2px dashed rgba(96,165,250,0.3)",borderRadius:10,padding:"30px 0",textAlign:"center",cursor:"pointer",color:"#475569"}}>
+        <label style={{border:"2px dashed rgba(96,165,250,0.3)",borderRadius:10,padding:"30px 0",textAlign:"center",cursor:"pointer",color:"#475569",display:"block"}}>
           <div style={{fontSize:32,marginBottom:8}}>📷</div>
-          <div style={{fontSize:13,fontWeight:600,color:"#60a5fa"}}>탭해서 촬영 또는 갤러리 선택</div>
+          <div style={{fontSize:13,fontWeight:600,color:"#60a5fa"}}>탭해서 촬영</div>
           <div style={{fontSize:11,marginTop:4}}>사진 보면서 번호 입력 가능</div>
-        </div>
+          <input type="file" accept="image/*" capture="environment" onChange={e=>handleMonitor(e,which)} style={{display:"none"}}/>
+        </label>
       )}
       {img&&<div style={{fontSize:11,color:"#475569",marginTop:4,textAlign:"center"}}>💡 재촬영해도 이전 사진 자동 저장 · 탭하면 전체화면</div>}
     </div>
@@ -756,11 +791,12 @@ function TowerList() {
         <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
           {list.map((r,i)=>{
             const isIn=[...tower1Used,...tower2Used].some(p=>p.replace(/\s/g,"")===r.plate.replace(/\s/g,""));
+            const isBadgeSel = badgeSel===r.plate;
             return(
-              <span key={i} onClick={()=>setSelected(selected?.plate===r.plate?null:r)} style={{
-                background:isIn?"rgba(124,58,237,0.4)":selected?.plate===r.plate?"rgba(29,78,216,0.4)":"rgba(255,255,255,0.07)",
-                border:isIn?"1px solid rgba(196,181,253,0.5)":selected?.plate===r.plate?"1px solid #60a5fa":"1px solid rgba(255,255,255,0.1)",
-                borderRadius:20,padding:"4px 11px",fontSize:12,color:isIn?"#c4b5fd":selected?.plate===r.plate?"#60a5fa":"#94a3b8",
+              <span key={i} onClick={()=>setBadgeSel(isBadgeSel?null:r.plate)} style={{
+                background:isIn?"rgba(124,58,237,0.4)":isBadgeSel?"rgba(29,78,216,0.4)":"rgba(255,255,255,0.07)",
+                border:isIn?"1px solid rgba(196,181,253,0.5)":isBadgeSel?"1px solid #60a5fa":"1px solid rgba(255,255,255,0.1)",
+                borderRadius:20,padding:"4px 11px",fontSize:12,color:isIn?"#c4b5fd":isBadgeSel?"#60a5fa":"#94a3b8",
                 cursor:"pointer",transition:"all .15s",fontWeight:isIn?700:400,
               }}>{r.plate}</span>
             );
@@ -770,8 +806,8 @@ function TowerList() {
 
       <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:12,padding:12,marginBottom:12}}>
         <div style={{fontSize:13,color:"#94a3b8",fontWeight:600,marginBottom:10}}>📹 타워 모니터 사진</div>
-        <MonitorBox which={1} img={monitor1} fileRef={file1Ref}/>
-        <MonitorBox which={2} img={monitor2} fileRef={file2Ref}/>
+        <MonitorBox which={1} img={monitor1}/>
+        <MonitorBox which={2} img={monitor2}/>
       </div>
 
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -784,11 +820,11 @@ function TowerList() {
 
       <div style={{background:"rgba(29,78,216,0.1)",border:"1px solid rgba(29,78,216,0.3)",borderRadius:10,padding:"10px 12px",marginBottom:10}}>
         <div style={{fontSize:12,color:"#60a5fa",fontWeight:600,marginBottom:7}}>📷 번호판 촬영으로 명단 조회</div>
-        <input type="file" accept="image/*" capture="environment" ref={fileRef} onChange={handleScan} style={{display:"none"}} />
         <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-          <button onClick={()=>fileRef.current?.click()} style={{background:"#1d4ed8",border:"none",borderRadius:8,padding:"7px 14px",color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer"}}>
+          <label style={{background:"#1d4ed8",border:"none",borderRadius:8,padding:"7px 14px",color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer",display:"inline-block"}}>
             📷 촬영
-          </button>
+            <input type="file" accept="image/*" capture="environment" onChange={handleScan} style={{display:"none"}} />
+          </label>
           {scanLoading && <span style={{color:"#94a3b8",fontSize:12}}>인식 중…</span>}
           {scanResult && <span style={{color:scanResult.startsWith("✅")?"#22c55e":scanResult.startsWith("❌")?"#ef4444":"#f59e0b",fontSize:12,fontWeight:600}}>{scanResult}</span>}
         </div>
@@ -896,7 +932,44 @@ function App() {
   function setHistory(v)   { const n=typeof v==="function"?v(history):v;   setHistoryRaw(n);   saveLS("pm_history",n); }
   function setBlacklist(v) { const n=typeof v==="function"?v(blacklist):v; setBlacklistRaw(n); saveLS("pm_blacklist",n); }
 
-  useInterval(() => setTick(t => t+1), 1000);
+  const alertedRef = useRef(new Set());
+  useInterval(() => {
+    setTick(t => t+1);
+    const soundOn = loadLS("pm_sound_alert", true);
+    const vibeOn  = loadLS("pm_vibe_alert",  false);
+    const earlyOn = loadLS("pm_early_alert", false);
+    if (!soundOn && !vibeOn) return;
+    const t = Date.now();
+    cars.forEach(car => {
+      if (car.paused) return;
+      const elapsed = t - car.enteredAt;
+      const limit   = minToMs(car.allowedMinutes);
+      const overKey = car.id + '_o';
+      const earlyKey = car.id + '_e';
+      if (elapsed > limit && !alertedRef.current.has(overKey)) {
+        alertedRef.current.add(overKey);
+        if (soundOn) playAlarmSound();
+        if (vibeOn && navigator.vibrate) navigator.vibrate([300,100,300,100,300]);
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('⏰ 주차 시간 초과!', {
+            body: `${car.plate} (${car.store?.name||''}) — ${Math.floor((elapsed-limit)/60000)+1}분 초과`,
+            icon: '/icons/icon-192x192.png',
+            tag: overKey,
+          });
+        }
+      } else if (earlyOn && elapsed > limit*0.75 && elapsed <= limit && !alertedRef.current.has(earlyKey)) {
+        alertedRef.current.add(earlyKey);
+        if (soundOn) playAlarmSound();
+        if (vibeOn && navigator.vibrate) navigator.vibrate([200,100,200]);
+      }
+    });
+    // 출차된 차량의 알림 키 정리
+    const carIds = new Set(cars.map(c => String(c.id)));
+    alertedRef.current.forEach(key => {
+      const id = key.replace(/_[oe]$/, '');
+      if (!carIds.has(id)) alertedRef.current.delete(key);
+    });
+  }, 1000);
 
   const addCar = data => { setCars(p=>[{...data,id:Date.now(),enteredAt:now()},...p]); setShowAdd(false); };
 
@@ -1145,24 +1218,27 @@ function SettingsTab({ stores, onUpdateStores, blacklist, onAddBL, onRemoveBL, t
   const [soundAlert,  setSoundAlert]  = useState(()=>loadLS("pm_sound_alert",  true));
   const [vibeAlert,   setVibeAlert]   = useState(()=>loadLS("pm_vibe_alert",   false));
   const [earlyAlert,  setEarlyAlert]  = useState(()=>loadLS("pm_early_alert",  false));
+  const [notifPerm,   setNotifPerm]   = useState(()=>'Notification' in window ? Notification.permission : 'unsupported');
   const [editIdx,     setEditIdx]     = useState(null);
   const [editData,    setEditData]    = useState({});
-  const [newStore,    setNewStore]    = useState({name:"",minutes:30,icon:"🏪",tower:false});
+  const [newStore,    setNewStore]    = useState({name:"",minutes:30,icon:"🏪",tower:false,dongJin:false});
   const [blPlate,     setBlPlate]     = useState("");
   const [blReason,    setBlReason]    = useState("");
   const [towerInput,  setTowerInput]  = useState(towerName);
 
   function toggle(key,val,setter){ setter(!val); saveLS(key,!val); }
 
-  function testSound(){
-    try{
-      const ctx=new (window.AudioContext||window.webkitAudioContext)();
-      const o=ctx.createOscillator(); const g=ctx.createGain();
-      o.connect(g); g.connect(ctx.destination);
-      o.frequency.value=880; g.gain.setValueAtTime(0.3,ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.5);
-      o.start(); o.stop(ctx.currentTime+0.5);
-    }catch(e){alert("알림음 재생 실패");}
+  function testSound(){ playAlarmSound(); }
+
+  async function requestNotif() {
+    if (!('Notification' in window)) { alert("이 브라우저에서는 푸시 알림이 지원되지 않습니다.\n(iOS는 홈 화면에 추가된 PWA에서만 지원)"); return; }
+    const p = await Notification.requestPermission();
+    setNotifPerm(p);
+    if (p === 'granted') {
+      new Notification('✅ 주차비서 알림 활성화', { body:'주차 시간 초과 시 이 기기로 알림을 받습니다.', icon:'/icons/icon-192x192.png' });
+    } else {
+      alert("알림이 차단되었습니다.\n브라우저 설정 → 사이트 설정 → 알림에서 허용으로 변경해주세요.");
+    }
   }
 
   const inpS={background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:8,padding:"8px 12px",color:"#f1f5f9",fontSize:14,width:"100%",outline:"none"};
@@ -1220,12 +1296,25 @@ function SettingsTab({ stores, onUpdateStores, blacklist, onAddBL, onRemoveBL, t
 
       <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:14,marginBottom:12}}>
         <div style={{fontSize:13,color:"#94a3b8",fontWeight:600,marginBottom:4}}>🔔 알림 설정</div>
-        <ToggleRow icon="🔊" label="소리 알림" desc="시간 초과 시 알림음" on={soundAlert} onToggle={()=>toggle("pm_sound_alert",soundAlert,setSoundAlert)}/>
+        <ToggleRow icon="🔊" label="소리 알림" desc="시간 초과 시 알림음 (4회 반복)" on={soundAlert} onToggle={()=>toggle("pm_sound_alert",soundAlert,setSoundAlert)}/>
         <ToggleRow icon="📳" label="진동 알림" desc="시간 초과 시 진동 (모바일)" on={vibeAlert} onToggle={()=>toggle("pm_vibe_alert",vibeAlert,setVibeAlert)}/>
         <ToggleRow icon="🟡" label="75% 미리 경고" desc="허용 시간 75% 도달 시 미리 알림" on={earlyAlert} onToggle={()=>toggle("pm_early_alert",earlyAlert,setEarlyAlert)}/>
         <button onClick={testSound} style={{width:"100%",marginTop:12,background:"linear-gradient(135deg,#7c3aed,#4f46e5)",border:"none",borderRadius:10,padding:11,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>
           🎵 알림음 테스트
         </button>
+        {notifPerm !== 'unsupported' && (
+          <div style={{marginTop:10,padding:"10px 12px",background:"rgba(255,255,255,0.04)",borderRadius:10,border:"1px solid rgba(255,255,255,0.08)"}}>
+            <div style={{fontSize:12,color:"#94a3b8",marginBottom:7}}>📲 휴대폰 푸시 알림 (시간 초과 시 알림 전송)</div>
+            {notifPerm === 'granted'
+              ? <div style={{color:"#22c55e",fontSize:13,fontWeight:600}}>✅ 알림 권한 허용됨 — 시간 초과 시 자동으로 알림이 발송됩니다</div>
+              : notifPerm === 'denied'
+              ? <div style={{color:"#ef4444",fontSize:12}}>❌ 알림 차단됨 — 브라우저 설정 → 사이트 설정 → 알림에서 허용으로 변경해주세요</div>
+              : <button onClick={requestNotif} style={{width:"100%",background:"#0ea5e9",border:"none",borderRadius:8,padding:10,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                  📲 알림 권한 요청 (휴대폰으로 알림 받기)
+                </button>
+            }
+          </div>
+        )}
       </div>
 
       <div style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:14,marginBottom:12}}>
@@ -1239,10 +1328,16 @@ function SettingsTab({ stores, onUpdateStores, blacklist, onAddBL, onRemoveBL, t
                   <input value={editData.name||""} onChange={e=>setEditData(d=>({...d,name:e.target.value}))} placeholder="매장명" style={{...inpS,flex:1}}/>
                   <input type="number" value={editData.minutes||""} onChange={e=>setEditData(d=>({...d,minutes:e.target.value}))} placeholder="분" style={{...inpS,width:60}}/>
                 </div>
-                <label style={{display:"flex",alignItems:"center",gap:7,color:"#94a3b8",fontSize:13,cursor:"pointer"}}>
-                  <input type="checkbox" checked={!!editData.tower} onChange={e=>setEditData(d=>({...d,tower:e.target.checked}))} style={{accentColor:"#3b82f6",width:15,height:15}}/>
-                  주차타워 전용
-                </label>
+                <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+                  <label style={{display:"flex",alignItems:"center",gap:7,color:"#94a3b8",fontSize:13,cursor:"pointer"}}>
+                    <input type="checkbox" checked={!!editData.tower} onChange={e=>setEditData(d=>({...d,tower:e.target.checked}))} style={{accentColor:"#3b82f6",width:15,height:15}}/>
+                    주차타워 가능
+                  </label>
+                  <label style={{display:"flex",alignItems:"center",gap:7,color:"#94a3b8",fontSize:13,cursor:"pointer"}}>
+                    <input type="checkbox" checked={!!editData.dongJin} onChange={e=>setEditData(d=>({...d,dongJin:e.target.checked}))} style={{accentColor:"#22c55e",width:15,height:15}}/>
+                    동진 주차장 가능
+                  </label>
+                </div>
                 <div style={{display:"flex",gap:6}}>
                   <button onClick={saveEdit} style={{flex:1,background:"#22c55e",border:"none",borderRadius:8,padding:8,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>저장</button>
                   <button onClick={()=>setEditIdx(null)} style={{flex:1,background:"#334155",border:"none",borderRadius:8,padding:8,color:"#fff",fontSize:13,cursor:"pointer"}}>취소</button>
@@ -1252,7 +1347,8 @@ function SettingsTab({ stores, onUpdateStores, blacklist, onAddBL, onRemoveBL, t
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <div>
                   <span style={{fontSize:14,color:"#f1f5f9",fontWeight:600}}>{s.icon} {s.name}</span>
-                  {s.tower&&<span style={{color:"#60a5fa",fontSize:10,marginLeft:5,background:"rgba(96,165,250,0.15)",padding:"1px 6px",borderRadius:20}}>타워전용</span>}
+                  {s.tower&&<span style={{color:"#60a5fa",fontSize:10,marginLeft:5,background:"rgba(96,165,250,0.15)",padding:"1px 6px",borderRadius:20}}>타워가능</span>}
+                  {s.dongJin&&<span style={{color:"#22c55e",fontSize:10,marginLeft:3,background:"rgba(34,197,94,0.15)",padding:"1px 6px",borderRadius:20}}>동진가능</span>}
                   <div style={{color:"#64748b",fontSize:12,marginTop:2}}>허용 {s.minutes}분</div>
                 </div>
                 <div style={{display:"flex",gap:5}}>
@@ -1270,10 +1366,16 @@ function SettingsTab({ stores, onUpdateStores, blacklist, onAddBL, onRemoveBL, t
             <input value={newStore.name} onChange={e=>setNewStore(d=>({...d,name:e.target.value}))} placeholder="매장명" style={{...inpS,flex:1}}/>
             <input type="number" value={newStore.minutes} onChange={e=>setNewStore(d=>({...d,minutes:e.target.value}))} placeholder="분" style={{...inpS,width:60}}/>
           </div>
-          <label style={{display:"flex",alignItems:"center",gap:7,color:"#94a3b8",fontSize:13,cursor:"pointer",marginBottom:9}}>
-            <input type="checkbox" checked={!!newStore.tower} onChange={e=>setNewStore(d=>({...d,tower:e.target.checked}))} style={{accentColor:"#3b82f6",width:15,height:15}}/>
-            주차타워 전용
-          </label>
+          <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:9}}>
+            <label style={{display:"flex",alignItems:"center",gap:7,color:"#94a3b8",fontSize:13,cursor:"pointer"}}>
+              <input type="checkbox" checked={!!newStore.tower} onChange={e=>setNewStore(d=>({...d,tower:e.target.checked}))} style={{accentColor:"#3b82f6",width:15,height:15}}/>
+              주차타워 가능
+            </label>
+            <label style={{display:"flex",alignItems:"center",gap:7,color:"#94a3b8",fontSize:13,cursor:"pointer"}}>
+              <input type="checkbox" checked={!!newStore.dongJin} onChange={e=>setNewStore(d=>({...d,dongJin:e.target.checked}))} style={{accentColor:"#22c55e",width:15,height:15}}/>
+              동진 주차장 가능
+            </label>
+          </div>
           <button onClick={addStore} style={{width:"100%",background:"#1d4ed8",border:"none",borderRadius:8,padding:10,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ 매장 추가</button>
         </div>
       </div>
