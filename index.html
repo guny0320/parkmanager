@@ -708,7 +708,13 @@ function TowerList() {
   const [filterTower,setFilter]    = useState(0);
   const [search,     setSearch]    = useState("");
   const [selected,   setSelected]  = useState(null);
-  const [badgeSel,   setBadgeSel]  = useState(null);
+  const [badgeSelSet, setBadgeSelSet] = useState(() => new Set(loadLS("pm_badge_sel", [])));
+  function toggleBadge(plate) {
+    const next = new Set(badgeSelSet);
+    if (next.has(plate)) next.delete(plate); else next.add(plate);
+    setBadgeSelSet(next);
+    saveLS("pm_badge_sel", [...next]);
+  }
   const [showForm,   setShowForm]  = useState(false);
   const [editIdx,    setEditIdx]   = useState(null);
   const [form,       setForm]      = useState({tower:1,dept:"",plate:"",car:"",phone:"",name:"",note:""});
@@ -859,13 +865,13 @@ function TowerList() {
         <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
           {list.map((r,i)=>{
             const isIn=[...tower1Used,...tower2Used].some(p=>p.replace(/\s/g,"")===r.plate.replace(/\s/g,""));
-            const isBadgeSel = badgeSel===r.plate;
+            const isBadgeSel = badgeSelSet.has(r.plate);
             return(
-              <span key={i} onClick={()=>setBadgeSel(isBadgeSel?null:r.plate)} style={{
-                background:isIn?"rgba(124,58,237,0.4)":isBadgeSel?"rgba(29,78,216,0.4)":"rgba(255,255,255,0.07)",
-                border:isIn?"1px solid rgba(196,181,253,0.5)":isBadgeSel?"1px solid #60a5fa":"1px solid rgba(255,255,255,0.1)",
-                borderRadius:20,padding:"4px 11px",fontSize:12,color:isIn?"#c4b5fd":isBadgeSel?"#60a5fa":"#94a3b8",
-                cursor:"pointer",transition:"all .15s",fontWeight:isIn?700:400,
+              <span key={i} onClick={()=>toggleBadge(r.plate)} style={{
+                background:isIn?"rgba(124,58,237,0.4)":isBadgeSel?"rgba(29,78,216,0.5)":"rgba(255,255,255,0.07)",
+                border:isIn?"1px solid rgba(196,181,253,0.5)":isBadgeSel?"2px solid #60a5fa":"1px solid rgba(255,255,255,0.1)",
+                borderRadius:20,padding:"4px 11px",fontSize:12,color:isIn?"#c4b5fd":isBadgeSel?"#93c5fd":"#94a3b8",
+                cursor:"pointer",transition:"all .15s",fontWeight:isBadgeSel||isIn?700:400,
               }}>{r.plate}</span>
             );
           })}
