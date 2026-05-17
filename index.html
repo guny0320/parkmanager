@@ -114,6 +114,27 @@ const fmtTime = ts => new Date(ts).toLocaleTimeString("ko-KR",{hour:"2-digit",mi
 const msToMin = ms => Math.floor(ms/60000);
 const minToMs = m  => m*60000;
 
+async function savePhotoToGallery(dataUrl) {
+  try {
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    const ext = blob.type.includes('png') ? 'png' : 'jpg';
+    const file = new File([blob], `parkmanager_${Date.now()}.${ext}`, { type: blob.type });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: '주차비서 촬영 사진' });
+      return 'shared';
+    }
+  } catch(e) {
+    if (e && e.name === 'AbortError') return 'cancelled';
+  }
+  // fallback: download
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = `parkmanager_${Date.now()}.jpg`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  return 'downloaded';
+}
+
 function playAlarmSound() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -475,7 +496,14 @@ function PlateScanner({ onDetected }) {
         </label>
         {status && <span style={{ color: status.startsWith("✅") ? "#22c55e" : "#94a3b8", fontSize:12 }}>{status}</span>}
       </div>
-      {preview && <img src={preview} alt="번호판" style={{ marginTop:8, maxHeight:80, borderRadius:8, border:"1px solid rgba(255,255,255,0.15)", display:"block" }} />}
+      {preview && (
+        <div style={{ marginTop:8 }}>
+          <img src={preview} alt="번호판" style={{ maxHeight:80, borderRadius:8, border:"1px solid rgba(255,255,255,0.15)", display:"block" }} />
+          <button onClick={()=>savePhotoToGallery(preview)} style={{ marginTop:5, background:"rgba(34,197,94,0.2)", border:"1px solid rgba(34,197,94,0.4)", borderRadius:7, padding:"4px 12px", color:"#22c55e", fontSize:11, fontWeight:600, cursor:"pointer" }}>
+            📥 갤러리에 저장
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -722,9 +750,14 @@ function TowerList() {
         </label>
       </div>
       {img?(
-        <img src={img} alt={"타워"+which+"호기"} onClick={()=>{
-          const w=window.open(); w.document.write("<img src='"+img+"' style='max-width:100%'>");
-        }} style={{width:"100%",borderRadius:10,border:"1px solid rgba(255,255,255,0.15)",cursor:"pointer",maxHeight:220,objectFit:"cover"}}/>
+        <div>
+          <img src={img} alt={"타워"+which+"호기"} onClick={()=>{
+            const w=window.open(); w.document.write("<img src='"+img+"' style='max-width:100%'>");
+          }} style={{width:"100%",borderRadius:10,border:"1px solid rgba(255,255,255,0.15)",cursor:"pointer",maxHeight:220,objectFit:"cover"}}/>
+          <button onClick={()=>savePhotoToGallery(img)} style={{marginTop:6,width:"100%",background:"rgba(34,197,94,0.15)",border:"1px solid rgba(34,197,94,0.35)",borderRadius:8,padding:"6px",color:"#22c55e",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+            📥 갤러리에 저장
+          </button>
+        </div>
       ):(
         <label style={{border:"2px dashed rgba(96,165,250,0.3)",borderRadius:10,padding:"30px 0",textAlign:"center",cursor:"pointer",color:"#475569",display:"block"}}>
           <div style={{fontSize:32,marginBottom:8}}>📷</div>
