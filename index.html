@@ -13,6 +13,18 @@
 <meta name="msapplication-TileColor" content="#1d4ed8">
 <meta name="msapplication-TileImage" content="/icons/icon-144x144.png">
 <link rel="manifest" href="/manifest.json">
+<script>
+(function(){
+  if(localStorage.getItem('pm_data_version')!=='v2_masked'){
+    localStorage.removeItem('pm_tower_list');
+  }
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.getRegistrations().then(function(regs){
+      regs.forEach(function(r){ r.update(); });
+    });
+  }
+})();
+</script>
 <link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192x192.png">
 <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152x152.png">
 <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512x512.png">
