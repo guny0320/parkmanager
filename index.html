@@ -684,7 +684,15 @@ const DEFAULT_TOWER_LIST = [
 ];
 
 function TowerList() {
-  const [list,       setListRaw]   = useState(()=>loadLS("pm_tower_list", DEFAULT_TOWER_LIST));
+  const [list,       setListRaw]   = useState(()=>{
+    const MASKED_VER = "v2_masked";
+    if (loadLS("pm_data_version", null) !== MASKED_VER) {
+      saveLS("pm_tower_list", DEFAULT_TOWER_LIST);
+      saveLS("pm_data_version", MASKED_VER);
+      return DEFAULT_TOWER_LIST;
+    }
+    return loadLS("pm_tower_list", DEFAULT_TOWER_LIST);
+  });
   const [monitor1,   setMonitor1]   = useState(()=>loadLS("pm_monitor1", null));
   const [monitor2,   setMonitor2]   = useState(()=>loadLS("pm_monitor2", null));
   const [tower1Used, setTower1UsedRaw] = useState(()=>loadLS("pm_tower1_used", []));
