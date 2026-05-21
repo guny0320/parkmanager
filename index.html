@@ -83,6 +83,8 @@ function loadLS(key, fallback) {
 function saveLS(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
+function maskName(n) { if(!n||n.length<2)return n; return n[0]+'*'+(n.length>2?n[n.length-1]:''); }
+function maskPhone(p) { if(!p)return p; const d=p.replace(/[^0-9]/g,''); return '****-'+d.slice(-4); }
 
 // ── 기본 매장 ─────────────────────────────────────────────────────────────────
 const DEFAULT_STORES = [
@@ -974,7 +976,7 @@ function TowerList() {
               {selected?.plate===r.plate && (
                 <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid rgba(255,255,255,0.1)"}}>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:8}}>
-                    {[["소속",r.dept],["차명",r.car],["사용자",r.name],["연락처",r.phone],["비고",r.note||"-"]].map(([k,v])=>(
+                    {[["소속",r.dept],["차명",r.car],["사용자",maskName(r.name)],["연락처",maskPhone(r.phone)],["비고",r.note||"-"]].map(([k,v])=>(
                       <div key={k} style={{background:"rgba(255,255,255,0.05)",borderRadius:8,padding:"6px 10px"}}>
                         <div style={{color:"#64748b",fontSize:10,marginBottom:2}}>{k}</div>
                         <div style={{color:"#f1f5f9",fontSize:13,fontWeight:600}}>{v}</div>
